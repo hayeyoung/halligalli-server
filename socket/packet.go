@@ -11,6 +11,11 @@ const (
 	ResponseEnterRoom = 1001
 	ResponseLeaveRoom = 1002
 	ResponseStartGame = 1010
+	ResponseReadyGame = 1011
+
+	ResponseOpenCard        = 2000
+	ResponseRingBellCorrect = 2002
+	ResponseRingBellWrong   = 2003
 )
 
 // 클라이언트 요청 시그널 상수 (클라이언트 -> 서버)
@@ -18,6 +23,8 @@ const (
 	RequestPing      = 1
 	RequestEnterRoom = 1001
 	RequestLeaveRoom = 1002
+	RequestReadyGame = 1011
+	RequestRingBell  = 2001
 )
 
 // 패킷 구조체 - 모든 클라이언트 응답에 사용
@@ -84,6 +91,8 @@ func ValidateRequestPacket(data []byte) (*RequestPacket, error) {
 		RequestPing:      true,
 		RequestEnterRoom: true,
 		RequestLeaveRoom: true,
+		RequestReadyGame: true,
+		RequestRingBell:  true,
 	}
 
 	if !validSignals[request.Signal] {
@@ -113,4 +122,24 @@ type GameStartData struct {
 	PlayerNames   []string `json:"playerNames"`
 	MyIndex       int      `json:"myIndex"`
 	StartingCards int      `json:"startingCards"`
+}
+
+// 카드 공개 데이터 구조체
+type OpenCardData struct {
+	FruitIndex  int `json:"fruitIndex"`  // 0-2 (과일 종류)
+	FruitCount  int `json:"fruitCount"`  // 1-5 (과일 개수)
+	PlayerIndex int `json:"playerIndex"` // 카드를 낸 플레이어 인덱스
+}
+
+// 벨 누르기 성공 데이터 구조체
+type RingBellCorrectData struct {
+	PlayerIndex int   `json:"playerIndex"` // 벨을 누른 플레이어 인덱스
+	PlayerCards []int `json:"playerCards"` // 각 플레이어별 덱의 카드 개수 배열
+}
+
+// 벨 누르기 실패 데이터 구조체
+type RingBellWrongData struct {
+	PlayerIndex int    `json:"playerIndex"` // 벨을 누른 플레이어 인덱스
+	CardGivenTo []bool `json:"cardGivenTo"` // 카드를 받은 플레이어들 (bool 배열, 인덱스는 플레이어 인덱스)
+	PlayerCards []int  `json:"playerCards"` // 각 플레이어별 덱의 카드 개수 배열
 }
