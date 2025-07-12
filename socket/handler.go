@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -17,6 +18,26 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+// 방 정보 구조체
+type Room struct {
+	mu            sync.RWMutex
+	players       map[string]*Player
+	maxPlayers    int
+	isGameStarted bool
+}
+
+// 플레이어 정보 구조체
+type Player struct {
+	ID       string `json:"id"`
+	Username string `json:"username"`
+}
+
+// 전역 방 인스턴스
+var GlobalRoom = &Room{
+	players:    make(map[string]*Player),
+	maxPlayers: 4, // 최대 4명
+}
+
 // 클라이언트 구조체 (소켓 연결 정보)
 type Client struct {
 	ID       string          `json:"id"`
@@ -24,6 +45,9 @@ type Client struct {
 	Send     chan []byte     `json:"-"`
 	LastPing time.Time       `json:"-"`
 	mu       sync.Mutex      `json:"-"`
+	// 방 참여 상태
+	IsInRoom bool   `json:"isInRoom"`
+	Username string `json:"username"`
 }
 
 // 핸들러 구조체
@@ -160,6 +184,10 @@ func (h *Handler) handleMessage(client *Client, message []byte) {
 	switch request.Signal {
 	case RequestPing:
 		h.handlePing(client)
+	case RequestEnterRoom:
+		h.handleEnterRoom(client)
+	case RequestLeaveRoom:
+		h.handleLeaveRoom(client)
 	default:
 		log.Printf("알 수 없는 요청 signal: %d", request.Signal)
 		h.sendErrorWithSignal(client, request.Signal, "알 수 없는 요청입니다")
@@ -172,6 +200,177 @@ func (h *Handler) handlePing(client *Client) {
 		"timestamp": time.Now().Unix(),
 	})
 	h.sendToClient(client, response)
+}
+
+// 방 입장 처리
+func (h *Handler) handleEnterRoom(client *Client) {
+	// 이미 방에 참여한 상태인지 확인
+	if client.IsInRoom {
+		h.sendErrorWithSignal(client, RequestEnterRoom, "이미 방에 참여한 상태입니다")
+		return
+	}
+
+	// 방 상태 확인
+	GlobalRoom.mu.RLock()
+	playerCount := len(GlobalRoom.players)
+	isGameStarted := GlobalRoom.isGameStarted
+	GlobalRoom.mu.RUnlock()
+
+	// 방이 꽉 찼는지 확인
+	if playerCount >= GlobalRoom.maxPlayers {
+		h.sendErrorWithSignal(client, RequestEnterRoom, "방이 꽉 찼습니다")
+		return
+	}
+
+	// 게임이 이미 시작된 상태인지 확인
+	if isGameStarted {
+		h.sendErrorWithSignal(client, RequestEnterRoom, "게임이 이미 시작된 상태입니다")
+		return
+	}
+
+	// 플레이어를 방에 추가
+	player := &Player{
+		ID:       client.ID,
+		Username: "Player" + client.ID[len(client.ID)-4:], // ID의 마지막 4자리를 사용자명으로
+	}
+
+	GlobalRoom.mu.Lock()
+	GlobalRoom.players[client.ID] = player
+	GlobalRoom.mu.Unlock()
+
+	// 클라이언트 상태 업데이트
+	client.mu.Lock()
+	client.IsInRoom = true
+	client.Username = player.Username
+	client.mu.Unlock()
+
+	// 방 입장 성공 응답
+	response := NewSuccessResponse(ResponseEnterRoom, map[string]interface{}{})
+	h.sendToClient(client, response)
+
+	log.Printf("플레이어 방 입장: %s (%s)", client.ID, player.Username)
+
+	// 현재 방 상태 로그 출력
+	GlobalRoom.mu.RLock()
+	currentPlayerCount := len(GlobalRoom.players)
+	GlobalRoom.mu.RUnlock()
+	log.Printf("현재 방 인원: %d/%d", currentPlayerCount, GlobalRoom.maxPlayers)
+
+	// 게임 시작 조건 확인
+	h.checkAndStartGame()
+}
+
+// 게임 시작 조건 확인 및 게임 시작
+func (h *Handler) checkAndStartGame() {
+	GlobalRoom.mu.Lock()
+	defer GlobalRoom.mu.Unlock()
+
+	// 게임이 이미 시작된 상태인지 확인
+	if GlobalRoom.isGameStarted {
+		return
+	}
+
+	// 방에 최대 인원이 들어왔는지 확인
+	if len(GlobalRoom.players) == GlobalRoom.maxPlayers {
+		// 게임 시작 상태로 변경
+		GlobalRoom.isGameStarted = true
+
+		// 플레이어 정보를 일관된 순서로 수집
+		playerNames := make([]string, 0, len(GlobalRoom.players))
+		playerIDs := make([]string, 0, len(GlobalRoom.players))
+
+		// 플레이어 ID를 정렬하여 일관된 순서 보장
+		sortedPlayerIDs := make([]string, 0, len(GlobalRoom.players))
+		for playerID := range GlobalRoom.players {
+			sortedPlayerIDs = append(sortedPlayerIDs, playerID)
+		}
+
+		// 플레이어 ID를 정렬 (일관된 순서 보장)
+		sort.Strings(sortedPlayerIDs)
+
+		for _, playerID := range sortedPlayerIDs {
+			player := GlobalRoom.players[playerID]
+			playerNames = append(playerNames, player.Username)
+			playerIDs = append(playerIDs, player.ID)
+		}
+
+		log.Printf("게임 시작! 플레이어 수: %d, 플레이어들: %v", len(GlobalRoom.players), playerNames)
+
+		// 각 클라이언트에게 게임 시작 패킷 전송
+		h.mu.RLock()
+		for client := range h.clients {
+			if client.IsInRoom {
+				// 클라이언트의 인덱스 찾기
+				myIndex := -1
+				for i, playerID := range playerIDs {
+					if playerID == client.ID {
+						myIndex = i
+						break
+					}
+				}
+
+				if myIndex != -1 {
+					gameStartData := &GameStartData{
+						PlayerCount:   len(GlobalRoom.players),
+						PlayerNames:   playerNames,
+						MyIndex:       myIndex,
+						StartingCards: 5, // 시작 카드 수 (기본값 5)
+					}
+
+					response := NewSuccessResponse(ResponseStartGame, gameStartData)
+					h.sendToClient(client, response)
+
+					log.Printf("클라이언트 %s (%s)에게 게임 시작 패킷 전송 - 인덱스: %d", client.ID, client.Username, myIndex)
+				}
+			}
+		}
+		h.mu.RUnlock()
+	}
+}
+
+// 방 나가기 처리
+func (h *Handler) handleLeaveRoom(client *Client) {
+	// 방에 참여하지 않은 상태인지 확인
+	if !client.IsInRoom {
+		h.sendErrorWithSignal(client, RequestLeaveRoom, "방에 참여하지 않은 상태입니다")
+		return
+	}
+
+	// 게임이 시작된 상태인지 확인
+	GlobalRoom.mu.RLock()
+	isGameStarted := GlobalRoom.isGameStarted
+	GlobalRoom.mu.RUnlock()
+
+	// 게임이 이미 시작된 상태인지 확인
+	if isGameStarted {
+		h.sendErrorWithSignal(client, RequestLeaveRoom, "게임이 이미 시작된 상태입니다")
+		return
+	}
+
+	// 플레이어를 방에서 제거
+	GlobalRoom.mu.Lock()
+	delete(GlobalRoom.players, client.ID)
+	GlobalRoom.mu.Unlock()
+
+	// 클라이언트 상태 업데이트
+	client.mu.Lock()
+	client.IsInRoom = false
+	client.Username = ""
+	client.mu.Unlock()
+
+	// 방 나가기 성공 응답
+	response := NewSuccessResponse(ResponseLeaveRoom, map[string]interface{}{})
+	h.sendToClient(client, response)
+
+	log.Printf("플레이어 방 퇴장: %s", client.ID)
+
+	// 게임이 시작된 상태였다면 게임 상태 리셋
+	if isGameStarted {
+		GlobalRoom.mu.Lock()
+		GlobalRoom.isGameStarted = false
+		GlobalRoom.mu.Unlock()
+		log.Printf("플레이어 퇴장으로 인한 게임 상태 리셋")
+	}
 }
 
 // 클라이언트에게 메시지 전송
@@ -273,12 +472,14 @@ func (h *Handler) broadcastToOthers(excludeClient *Client, message interface{}) 
 
 // 에러 메시지 전송 (기본 signal 0 사용)
 func (h *Handler) sendError(client *Client, message string) {
+	log.Printf("에러 발생: %s", message)
 	errorResponse := NewErrorResponse(0, message)
 	h.sendToClient(client, errorResponse)
 }
 
 // 에러 메시지 전송 (특정 signal 사용)
 func (h *Handler) sendErrorWithSignal(client *Client, signal int, message string) {
+	log.Printf("에러 발생 (signal: %d): %s", signal, message)
 	errorResponse := NewErrorResponse(signal, message)
 	h.sendToClient(client, errorResponse)
 }
@@ -316,6 +517,14 @@ func (h *Handler) Run() {
 				log.Printf("클라이언트 연결 해제: %s", client.ID)
 			}
 			h.mu.Unlock()
+
+			// 방에 참여한 상태라면 방에서도 제거
+			if client.IsInRoom {
+				GlobalRoom.mu.Lock()
+				delete(GlobalRoom.players, client.ID)
+				GlobalRoom.mu.Unlock()
+				log.Printf("플레이어 방에서 제거: %s", client.ID)
+			}
 
 		case message := <-h.broadcast:
 			h.mu.RLock()
