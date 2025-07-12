@@ -16,6 +16,8 @@ const (
 	ResponseOpenCard        = 2000
 	ResponseRingBellCorrect = 2002
 	ResponseRingBellWrong   = 2003
+
+	ResponseEndGame = 3000
 )
 
 // 클라이언트 요청 시그널 상수 (클라이언트 -> 서버)
@@ -142,4 +144,10 @@ type RingBellWrongData struct {
 	PlayerIndex int    `json:"playerIndex"` // 벨을 누른 플레이어 인덱스
 	CardGivenTo []bool `json:"cardGivenTo"` // 카드를 받은 플레이어들 (bool 배열, 인덱스는 플레이어 인덱스)
 	PlayerCards []int  `json:"playerCards"` // 각 플레이어별 덱의 카드 개수 배열
+}
+
+// 게임 종료 데이터 구조체
+type EndGameData struct {
+	PlayerCards []int `json:"playerCards"` // 각 플레이어의 카드 개수 배열
+	PlayerRanks []int `json:"playerRanks"` // 각 플레이어의 순위 배열 (1등부터 시작)
 }
