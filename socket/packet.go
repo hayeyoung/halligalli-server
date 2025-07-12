@@ -7,12 +7,17 @@ import (
 
 // 패킷 시그널 상수 (서버 -> 클라이언트)
 const (
-	ResponsePong = 1
+	ResponsePong      = 1
+	ResponseEnterRoom = 1001
+	ResponseLeaveRoom = 1002
+	ResponseStartGame = 1010
 )
 
 // 클라이언트 요청 시그널 상수 (클라이언트 -> 서버)
 const (
-	RequestPing = 1
+	RequestPing      = 1
+	RequestEnterRoom = 1001
+	RequestLeaveRoom = 1002
 )
 
 // 패킷 구조체 - 모든 클라이언트 응답에 사용
@@ -48,9 +53,7 @@ func NewSuccessResponse(signal int, data interface{}) *ResponsePacket {
 }
 
 func NewErrorResponse(requestSignal int, message string) *ResponsePacket {
-	return NewResponse(requestSignal, map[string]interface{}{
-		"message": message,
-	}, CodeError)
+	return NewResponse(requestSignal, map[string]interface{}{}, CodeError)
 }
 
 // 패킷을 JSON으로 마샬링
@@ -78,7 +81,9 @@ func ValidateRequestPacket(data []byte) (*RequestPacket, error) {
 
 	// signal이 유효한지 확인
 	validSignals := map[int]bool{
-		RequestPing: true,
+		RequestPing:      true,
+		RequestEnterRoom: true,
+		RequestLeaveRoom: true,
 	}
 
 	if !validSignals[request.Signal] {
@@ -100,4 +105,12 @@ type InvalidPacketError struct {
 
 func (e *InvalidPacketError) Error() string {
 	return e.Message
+}
+
+// 게임 시작 데이터 구조체
+type GameStartData struct {
+	PlayerCount   int      `json:"playerCount"`
+	PlayerNames   []string `json:"playerNames"`
+	MyIndex       int      `json:"myIndex"`
+	StartingCards int      `json:"startingCards"`
 }
