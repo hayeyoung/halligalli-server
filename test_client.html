@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HalliGalli WebSocket 테스트</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+        .connected { background-color: #d4edda; color: #155724; }
+        .disconnected { background-color: #f8d7da; color: #721c24; }
+        .message-area {
+            height: 300px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            padding: 10px;
+            margin: 10px 0;
+            background-color: #f9f9f9;
+        }
+        .input-group {
+            margin: 10px 0;
+        }
+        input, button {
+            padding: 8px 12px;
+            margin: 5px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        .player-list {
+            margin: 10px 0;
+            padding: 10px;
+            background-color: #e9ecef;
+            border-radius: 4px;
+        }
+        .player-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 5px 0;
+            border-bottom: 1px solid #ddd;
+        }
+        .ready { color: green; }
+        .not-ready { color: orange; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>HalliGalli WebSocket 테스트</h1>
+        
+        <div id="status" class="status disconnected">연결되지 않음</div>
+        
+        <div class="input-group">
+            <input type="text" id="username" placeholder="사용자명" value="플레이어">
+            <button onclick="connect()" id="connectBtn">연결</button>
+            <button onclick="disconnect()" id="disconnectBtn" disabled>연결 해제</button>
+        </div>
+        
+        <div class="input-group">
+            <button onclick="join()" id="joinBtn" disabled>참가</button>
+            <button onclick="toggleReady()" id="readyBtn" disabled>준비</button>
+        </div>
+        
+        <div class="input-group">
+            <input type="text" id="chatInput" placeholder="채팅 메시지" disabled>
+            <button onclick="sendChat()" id="chatBtn" disabled>전송</button>
+        </div>
+        
+        <div class="input-group">
+            <button onclick="sendPing()" id="pingBtn" disabled>핑</button>
+            <button onclick="sendGameAction('bell')" id="bellBtn" disabled>벨</button>
+            <button onclick="sendGameAction('card')" id="cardBtn" disabled>카드</button>
+        </div>
+        
+        <div id="playerList" class="player-list" style="display: none;">
+            <h3>참가자 목록</h3>
+            <div id="players"></div>
+        </div>
+        
+        <div class="message-area" id="messageArea"></div>
+    </div>
+
+    <script>
+        let ws = null;
+        let clientId = null;
+        let isConnected = false;
+        let players = new Map();
+
+        function updateStatus(message, isConnected) {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = 'status ' + (isConnected ? 'connected' : 'disconnected');
+        }
+
+        function addMessage(message, type = 'info') {
+            const messageArea = document.getElementById('messageArea');
+            const timestamp = new Date().toLocaleTimeString();
+            const div = document.createElement('div');
+            div.innerHTML = `<span style="color: #666;">[${timestamp}]</span> <span style="color: ${type === 'error' ? 'red' : type === 'success' ? 'green' : 'blue'};">${message}</span>`;
+            messageArea.appendChild(div);
+            messageArea.scrollTop = messageArea.scrollHeight;
+        }
+
+        function connect() {
+            const username = document.getElementById('username').value;
+            if (!username.trim()) {
+                alert('사용자명을 입력해주세요.');
+                return;
+            }
+
+            ws = new WebSocket('ws://localhost:8080/ws');
+            
+            ws.onopen = function() {
+                isConnected = true;
+                updateStatus('연결됨', true);
+                addMessage('WebSocket 연결됨', 'success');
+                
+                document.getElementById('connectBtn').disabled = true;
+                document.getElementById('disconnectBtn').disabled = false;
+                document.getElementById('joinBtn').disabled = false;
+            };
+            
+            ws.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    handleMessage(data);
+                } catch (e) {
+                    addMessage('메시지 파싱 오류: ' + e.message, 'error');
+                }
+            };
+            
+            ws.onclose = function() {
+                isConnected = false;
+                updateStatus('연결 해제됨', false);
+                addMessage('WebSocket 연결 해제됨', 'error');
+                
+                document.getElementById('connectBtn').disabled = false;
+                document.getElementById('disconnectBtn').disabled = true;
+                document.getElementById('joinBtn').disabled = true;
+                document.getElementById('readyBtn').disabled = true;
+                document.getElementById('chatBtn').disabled = true;
+                document.getElementById('pingBtn').disabled = true;
+                document.getElementById('bellBtn').disabled = true;
+                document.getElementById('cardBtn').disabled = true;
+                document.getElementById('chatInput').disabled = true;
+                
+                players.clear();
+                updatePlayerList();
+            };
+            
+            ws.onerror = function(error) {
+                addMessage('WebSocket 오류: ' + error, 'error');
+            };
+        }
+
+        function disconnect() {
+            if (ws) {
+                ws.close();
+            }
+        }
+
+        function sendMessage(type, data = {}) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                addMessage('연결이 없습니다.', 'error');
+                return;
+            }
+            
+            const message = {
+                type: type,
+                ...data
+            };
+            
+            ws.send(JSON.stringify(message));
+            addMessage(`전송: ${type}`, 'info');
+        }
+
+        function handleMessage(data) {
+            switch (data.type) {
+                case 'connection':
+                    clientId = data.data.clientId;
+                    addMessage(`연결 성공! 클라이언트 ID: ${clientId}`, 'success');
+                    break;
+                    
+                case 'pong':
+                    addMessage(`핑 응답: ${new Date(data.data.timestamp * 1000).toLocaleTimeString()}`, 'info');
+                    break;
+                    
+                case 'player_joined':
+                    addMessage(`새 참가자: ${data.data.username} (${data.data.clientId})`, 'info');
+                    break;
+                    
+                case 'player_ready':
+                    const player = players.get(data.data.clientId);
+                    if (player) {
+                        player.isReady = data.data.isReady;
+                        updatePlayerList();
+                    }
+                    addMessage(`${data.data.clientId} 준비 상태 변경: ${data.data.isReady}`, 'info');
+                    break;
+                    
+                case 'player_list':
+                    players.clear();
+                    data.data.players.forEach(player => {
+                        players.set(player.clientId, {
+                            username: player.username,
+                            isReady: player.isReady,
+                            playerIdx: player.playerIdx
+                        });
+                    });
+                    updatePlayerList();
+                    addMessage(`참가자 목록 업데이트: ${data.data.players.length}명`, 'info');
+                    break;
+                    
+                case 'game_action':
+                    addMessage(`게임 액션: ${data.data.clientId} - ${data.data.action}`, 'info');
+                    break;
+                    
+                case 'chat':
+                    addMessage(`[${data.data.username}]: ${data.data.content}`, 'info');
+                    break;
+                    
+                case 'error':
+                    addMessage(`오류: ${data.data.message}`, 'error');
+                    break;
+                    
+                default:
+                    addMessage(`알 수 없는 메시지 타입: ${data.type}`, 'error');
+            }
+        }
+
+        function join() {
+            const username = document.getElementById('username').value;
+            sendMessage('join', { username: username });
+        }
+
+        function toggleReady() {
+            sendMessage('ready');
+        }
+
+        function sendChat() {
+            const input = document.getElementById('chatInput');
+            const content = input.value.trim();
+            if (content) {
+                sendMessage('chat', { content: content });
+                input.value = '';
+            }
+        }
+
+        function sendPing() {
+            sendMessage('ping');
+        }
+
+        function sendGameAction(action) {
+            sendMessage('game_action', { 
+                action: action,
+                data: { timestamp: Date.now() }
+            });
+        }
+
+        function updatePlayerList() {
+            const playerList = document.getElementById('playerList');
+            const playersDiv = document.getElementById('players');
+            
+            if (players.size === 0) {
+                playerList.style.display = 'none';
+                return;
+            }
+            
+            playerList.style.display = 'block';
+            playersDiv.innerHTML = '';
+            
+            players.forEach((player, clientId) => {
+                const div = document.createElement('div');
+                div.className = 'player-item';
+                div.innerHTML = `
+                    <span>${player.username} (${clientId})</span>
+                    <span class="${player.isReady ? 'ready' : 'not-ready'}">
+                        ${player.isReady ? '준비됨' : '준비 안됨'}
+                    </span>
+                `;
+                playersDiv.appendChild(div);
+            });
+        }
+
+        // 엔터키로 채팅 전송
+        document.getElementById('chatInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                sendChat();
+            }
+        });
+
+        // 초기 상태 설정
+        updateStatus('연결되지 않음', false);
+    </script>
+</body>
+</html> 
