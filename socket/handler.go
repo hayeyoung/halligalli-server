@@ -46,6 +46,8 @@ type Room struct {
 	publicFruitCounts  []int // 각 플레이어의 공개된 카드 과일 개수
 	// 벨 누르기 관련 상태
 	bellRung bool // 벨이 눌렸는지 여부 (새로운 카드 공개 전까지 유지)
+	// 게임 제한시간 관련 상태
+	gameTimer *time.Timer // 게임 제한시간 타이머
 }
 
 // 플레이어 정보 구조체
@@ -882,17 +884,23 @@ func (h *Handler) openCard() {
 	// 현재 플레이어 인덱스
 	playerIndex := GlobalRoom.currentPlayerIndex
 
-	// 플레이어가 카드를 가지고 있는지 확인
-	if GlobalRoom.playerCards[playerIndex] <= 0 {
-		log.Printf("플레이어 %d가 카드를 가지고 있지 않아서 카드 공개 중단", playerIndex)
-		return
+	// 카드를 가진 플레이어를 찾을 때까지 순환
+	originalPlayerIndex := playerIndex
+	for GlobalRoom.playerCards[playerIndex] <= 0 {
+		// 다음 플레이어로 순환
+		GlobalRoom.currentPlayerIndex = (GlobalRoom.currentPlayerIndex + 1) % totalPlayers
+		playerIndex = GlobalRoom.currentPlayerIndex
+
+		// 한 바퀴 돌았는데도 카드를 가진 플레이어가 없으면 게임 종료
+		if playerIndex == originalPlayerIndex {
+			log.Printf("모든 플레이어가 카드를 가지고 있지 않아서 게임 종료")
+			// 게임 종료 로직 추가 가능
+			return
+		}
 	}
 
 	// 플레이어 손패에서 카드 1장 제거
 	GlobalRoom.playerCards[playerIndex]--
-
-	// 다음 플레이어로 순환
-	GlobalRoom.currentPlayerIndex = (GlobalRoom.currentPlayerIndex + 1) % totalPlayers
 
 	// 해당 플레이어의 공개된 카드 정보 업데이트
 	GlobalRoom.publicFruitIndexes[playerIndex] = fruitIndex
@@ -1108,6 +1116,119 @@ func shuffleIntSlice(slice []int) {
 		j := rand.Intn(i + 1)
 		slice[i], slice[j] = slice[j], slice[i]
 	}
+}
+
+// 순위 계산 함수
+func calculatePlayerRanks(playerCards []int) []int {
+	// 플레이어 인덱스와 카드 개수를 함께 저장
+	type PlayerCardInfo struct {
+		playerIndex int
+		cardCount   int
+	}
+
+	// 플레이어 정보 배열 생성
+	playerInfos := make([]PlayerCardInfo, len(playerCards))
+	for i, cardCount := range playerCards {
+		playerInfos[i] = PlayerCardInfo{
+			playerIndex: i,
+			cardCount:   cardCount,
+		}
+	}
+
+	// 카드 개수 기준으로 내림차순 정렬 (카드가 많을수록 높은 순위)
+	sort.Slice(playerInfos, func(i, j int) bool {
+		return playerInfos[i].cardCount > playerInfos[j].cardCount
+	})
+
+	// 순위 배열 생성 (1등부터 시작)
+	ranks := make([]int, len(playerCards))
+	for i := range ranks {
+		ranks[i] = i + 1 // 기본값으로 인덱스+1 설정
+	}
+
+	// 실제 순위로 업데이트 (공동 순위 처리)
+	currentRank := 1
+	currentCardCount := -1
+
+	for i, playerInfo := range playerInfos {
+		// 카드 개수가 바뀌면 순위 증가
+		if playerInfo.cardCount != currentCardCount {
+			currentRank = i + 1
+			currentCardCount = playerInfo.cardCount
+		}
+
+		// 현재 순위를 해당 플레이어에게 할당
+		ranks[playerInfo.playerIndex] = currentRank
+	}
+
+	return ranks
+}
+
+// 게임 종료 처리
+func (h *Handler) endGame() {
+	GlobalRoom.mu.Lock()
+	defer GlobalRoom.mu.Unlock()
+
+	log.Printf("게임 제한시간 종료 - 게임 종료")
+
+	// 현재 플레이어 카드 개수와 순위 계산
+	playerCards := make([]int, len(GlobalRoom.playerCards))
+	copy(playerCards, GlobalRoom.playerCards)
+	playerRanks := calculatePlayerRanks(playerCards)
+
+	// 게임 종료 데이터 생성
+	endGameData := &EndGameData{
+		PlayerCards: playerCards,
+		PlayerRanks: playerRanks,
+	}
+
+	// 모든 클라이언트에게 게임 종료 패킷 전송
+	h.mu.RLock()
+	for c := range h.clients {
+		if c.IsInRoom {
+			response := NewSuccessResponse(ResponseEndGame, endGameData)
+			h.sendToClient(c, response)
+		}
+	}
+	h.mu.RUnlock()
+
+	// 게임 상태 초기화
+	GlobalRoom.isGameStarted = false
+	GlobalRoom.isCardGameStarted = false
+	GlobalRoom.playerCards = nil
+	GlobalRoom.readyPlayers = nil
+	GlobalRoom.publicFruitIndexes = nil
+	GlobalRoom.publicFruitCounts = nil
+	GlobalRoom.bellRung = false
+	GlobalRoom.playerIndexes = nil
+	GlobalRoom.players = make(map[string]*Player)
+
+	// 타이머들 정지
+	if GlobalRoom.cardTimer != nil {
+		GlobalRoom.cardTimer.Stop()
+		GlobalRoom.cardTimer = nil
+	}
+	if GlobalRoom.gameTimer != nil {
+		GlobalRoom.gameTimer.Stop()
+		GlobalRoom.gameTimer = nil
+	}
+
+	log.Printf("게임 종료 완료 - 순위: %v", playerRanks)
+}
+
+// 게임 타이머 시작
+func (h *Handler) startGameTimer() {
+	// 기존 게임 타이머가 있다면 정지
+	if GlobalRoom.gameTimer != nil {
+		GlobalRoom.gameTimer.Stop()
+	}
+
+	// 설정된 제한시간 후 게임 종료 (120초)
+	GlobalRoom.gameTimer = time.AfterFunc(120*time.Second, func() {
+		h.endGame()
+	})
+
+	log.Printf("게임 타이머 시작 - 120초 후 종료")
 }
 
 // OpenCard 타이머 초기화
