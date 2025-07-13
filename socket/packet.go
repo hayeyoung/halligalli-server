@@ -16,6 +16,7 @@ const (
 	ResponseOpenCard        = 2000
 	ResponseRingBellCorrect = 2002
 	ResponseRingBellWrong   = 2003
+	ResponseEmotion         = 2004
 
 	ResponseEndGame = 3000
 )
@@ -27,6 +28,7 @@ const (
 	RequestLeaveRoom = 1002
 	RequestReadyGame = 1011
 	RequestRingBell  = 2001
+	RequestEmotion   = 2004
 )
 
 // 패킷 구조체 - 모든 클라이언트 응답에 사용
@@ -95,6 +97,7 @@ func ValidateRequestPacket(data []byte) (*RequestPacket, error) {
 		RequestLeaveRoom: true,
 		RequestReadyGame: true,
 		RequestRingBell:  true,
+		RequestEmotion:   true,
 	}
 
 	if !validSignals[request.Signal] {
@@ -124,6 +127,7 @@ type GameStartData struct {
 	PlayerNames   []string `json:"playerNames"`
 	MyIndex       int      `json:"myIndex"`
 	StartingCards int      `json:"startingCards"`
+	GameTimeLimit int      `json:"gameTimeLimit"` // 게임 제한시간 (초)
 }
 
 // 카드 공개 데이터 구조체
@@ -150,4 +154,15 @@ type RingBellWrongData struct {
 type EndGameData struct {
 	PlayerCards []int `json:"playerCards"` // 각 플레이어의 카드 개수 배열
 	PlayerRanks []int `json:"playerRanks"` // 각 플레이어의 순위 배열 (1등부터 시작)
+}
+
+// 감정표현 요청 데이터 구조체
+type RequestEmotionData struct {
+	EmotionType int `json:"emotionType"` // 감정표현 타입
+}
+
+// 감정표현 응답 데이터 구조체
+type ResponseEmotionData struct {
+	PlayerIndex int `json:"playerIndex"` // 감정표현을 한 플레이어 인덱스
+	EmotionType int `json:"emotionType"` // 감정표현 타입
 }
