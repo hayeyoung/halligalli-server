@@ -48,7 +48,8 @@ type Room struct {
 	// 벨 누르기 관련 상태
 	bellRung bool // 벨이 눌렸는지 여부 (새로운 카드 공개 전까지 유지)
 	// 게임 제한시간 관련 상태
-	gameTimer *time.Timer // 게임 제한시간 타이머
+	gameTimer     *time.Timer // 게임 제한시간 타이머
+	isTimeExpired bool        // 시간제한이 끝났는지 여부
 	// 감정표현 관련 상태
 	lastEmotionTimes map[string]time.Time // 각 클라이언트별 마지막 감정표현 시간
 }
@@ -273,7 +274,7 @@ func (h *Handler) handleEnterRoom(client *Client) {
 	// 플레이어를 방에 추가
 	player := &Player{
 		ID:       client.ID,
-		Username: "Player" + client.ID[len(client.ID)-4:], // ID의 마지막 4자리를 사용자명으로
+		Username: "Player" + generateRandomNumber(4), // 랜덤 숫자 4개를 사용자명으로
 	}
 
 	GlobalRoom.mu.Lock()
@@ -320,20 +321,20 @@ func (h *Handler) checkAndStartGame() {
 		// 준비 완료 상태 초기화
 		GlobalRoom.readyPlayers = make(map[string]bool)
 
-		// 플레이어 정보를 일관된 순서로 수집
+		// 플레이어 정보를 랜덤한 순서로 수집
 		playerNames := make([]string, 0, len(GlobalRoom.players))
 		playerIDs := make([]string, 0, len(GlobalRoom.players))
 
-		// 플레이어 ID를 정렬하여 일관된 순서 보장
-		sortedPlayerIDs := make([]string, 0, len(GlobalRoom.players))
+		// 플레이어 ID를 배열로 수집
+		playerIDList := make([]string, 0, len(GlobalRoom.players))
 		for playerID := range GlobalRoom.players {
-			sortedPlayerIDs = append(sortedPlayerIDs, playerID)
+			playerIDList = append(playerIDList, playerID)
 		}
 
-		// 플레이어 ID를 정렬 (일관된 순서 보장)
-		sort.Strings(sortedPlayerIDs)
+		// 플레이어 ID를 랜덤하게 섞기
+		shuffleStringSlice(playerIDList)
 
-		for _, playerID := range sortedPlayerIDs {
+		for _, playerID := range playerIDList {
 			player := GlobalRoom.players[playerID]
 			playerNames = append(playerNames, player.Username)
 			playerIDs = append(playerIDs, player.ID)
@@ -449,6 +450,7 @@ func (h *Handler) handleLeaveRoom(client *Client) {
 		GlobalRoom.publicFruitCounts = nil   // 공개된 카드 배열 초기화
 		GlobalRoom.openCards = nil           // 공개된 카드 개수 배열 초기화
 		GlobalRoom.bellRung = false          // 벨 누르기 상태 초기화
+		GlobalRoom.isTimeExpired = false     // 시간제한 상태 초기화
 		GlobalRoom.playerIndexes = nil       // 플레이어 인덱스 매핑 초기화
 		if GlobalRoom.cardTimer != nil {
 			GlobalRoom.cardTimer.Stop() // 카드 타이머 정지
@@ -747,6 +749,16 @@ func randomString(length int) string {
 	return string(b)
 }
 
+// 랜덤 숫자 생성 (지정된 자릿수)
+func generateRandomNumber(digits int) string {
+	const charset = "0123456789"
+	b := make([]byte, digits)
+	for i := range b {
+		b[i] = charset[rand.Intn(len(charset))]
+	}
+	return string(b)
+}
+
 // 핸들러 실행
 func (h *Handler) Run() {
 	for {
@@ -852,6 +864,7 @@ func (h *Handler) checkAllPlayersDisconnected() {
 		GlobalRoom.publicFruitIndexes = nil           // 공개된 카드 배열 초기화
 		GlobalRoom.publicFruitCounts = nil            // 공개된 카드 배열 초기화
 		GlobalRoom.bellRung = false                   // 벨 누르기 상태 초기화
+		GlobalRoom.isTimeExpired = false              // 시간제한 상태 초기화
 		GlobalRoom.playerIndexes = nil                // 플레이어 인덱스 매핑 초기화
 		GlobalRoom.players = make(map[string]*Player) // 방 비우기
 
@@ -915,6 +928,10 @@ func (h *Handler) openCard() {
 		// 한 바퀴 돌았는데도 카드를 가진 플레이어가 없으면 게임 종료
 		if playerIndex == originalPlayerIndex {
 			log.Printf("모든 플레이어가 카드를 가지고 있지 않아서 게임 종료")
+
+			// 각 플레이어가 공개한 카드를 자신의 손패로 되돌리기
+			GlobalRoom.returnOpenCardsToPlayers()
+
 			log.Printf("=== openCard에서 endGameInternal 호출 ===")
 			h.endGameInternal()
 			return
@@ -1019,6 +1036,7 @@ func (h *Handler) handleRingBell(client *Client) {
 		GlobalRoom.mu.RLock()
 		updatedPlayerCards := make([]int, len(GlobalRoom.playerCards))
 		copy(updatedPlayerCards, GlobalRoom.playerCards)
+		isTimeExpired := GlobalRoom.isTimeExpired
 		GlobalRoom.mu.RUnlock()
 
 		// 성공 데이터 생성
@@ -1038,6 +1056,12 @@ func (h *Handler) handleRingBell(client *Client) {
 		h.mu.RUnlock()
 
 		log.Printf("벨 누르기 성공! 플레이어 인덱스: %d", playerIndex)
+
+		// 시간제한이 끝난 후 올바르게 종을 친 경우 게임 종료
+		if isTimeExpired {
+			log.Printf("시간제한 후 올바른 벨 누르기로 게임 종료")
+			h.endGame()
+		}
 	} else {
 		// 벨을 잘못 누른 경우, 다른 플레이어들에게 카드 분배
 		cardGivenTo := GlobalRoom.DistributeCardsFromPlayer(playerIndex)
@@ -1232,6 +1256,30 @@ func shuffleIntSlice(slice []int) {
 	}
 }
 
+// string 슬라이스를 섞는 함수
+func shuffleStringSlice(slice []string) {
+	for i := len(slice) - 1; i > 0; i-- {
+		j := rand.Intn(i + 1)
+		slice[i], slice[j] = slice[j], slice[i]
+	}
+}
+
+// 공개된 카드를 각 플레이어의 손패로 되돌리는 함수
+func (r *Room) returnOpenCardsToPlayers() {
+	for i := 0; i < len(r.playerCards); i++ {
+		if r.openCards[i] > 0 {
+			r.playerCards[i] += r.openCards[i]
+			log.Printf("플레이어 %d의 공개된 카드 %d장을 손패로 되돌림", i, r.openCards[i])
+		}
+	}
+
+	// 공개된 카드 개수 초기화
+	for i := 0; i < len(r.openCards); i++ {
+		r.openCards[i] = 0
+	}
+	log.Printf("모든 플레이어의 공개된 카드 개수를 0으로 초기화")
+}
+
 // 순위 계산 함수
 func calculatePlayerRanks(playerCards []int) []int {
 	// 플레이어 인덱스와 카드 개수를 함께 저장
@@ -1283,6 +1331,9 @@ func (h *Handler) endGameInternal() {
 	log.Printf("=== 게임 종료 함수 호출됨 ===")
 	log.Printf("게임 제한시간 종료 - 게임 종료")
 
+	// 각 플레이어가 공개한 카드를 자신의 손패로 되돌리기
+	GlobalRoom.returnOpenCardsToPlayers()
+
 	// 현재 플레이어 카드 개수와 순위 계산
 	playerCards := make([]int, len(GlobalRoom.playerCards))
 	copy(playerCards, GlobalRoom.playerCards)
@@ -1313,6 +1364,7 @@ func (h *Handler) endGameInternal() {
 	GlobalRoom.publicFruitCounts = nil
 	GlobalRoom.openCards = nil
 	GlobalRoom.bellRung = false
+	GlobalRoom.isTimeExpired = false
 	GlobalRoom.playerIndexes = nil
 	GlobalRoom.players = make(map[string]*Player)
 	GlobalRoom.lastEmotionTimes = make(map[string]time.Time)
@@ -1351,12 +1403,15 @@ func (h *Handler) startGameTimer() {
 		GlobalRoom.gameTimer.Stop()
 	}
 
-	// 설정된 제한시간 후 게임 종료
+	// 설정된 제한시간 후 시간제한 플래그 설정
 	GlobalRoom.gameTimer = time.AfterFunc(time.Duration(config.GameTimeLimit)*time.Second, func() {
-		h.endGame()
+		GlobalRoom.mu.Lock()
+		GlobalRoom.isTimeExpired = true
+		GlobalRoom.mu.Unlock()
+		log.Printf("게임 제한시간 종료 - 누군가가 올바르게 종을 칠 때까지 게임 계속 진행")
 	})
 
-	log.Printf("게임 타이머 시작 - %d초 후 종료", config.GameTimeLimit)
+	log.Printf("게임 타이머 시작 - %d초 후 시간제한", config.GameTimeLimit)
 }
 
 // OpenCard 타이머 초기화
