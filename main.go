@@ -1,12 +1,11 @@
 package main
 
 import (
-	"fmt"
 	"log"
-	"os"
 
-	"main/auth"
-	"main/db"
+	// "main/auth"
+	// "main/db"
+
 	"main/socket"
 
 	"github.com/gin-gonic/gin"
@@ -19,23 +18,23 @@ const (
 )
 
 func main() {
-	// ✅ .env 로드
+	// ✅ .env 로드 (Google 로그인 비활성화)
 	err := godotenv.Load()
 	if err != nil {
 		log.Fatal(".env 파일 로드 실패:", err)
 	}
-	fmt.Println("✅ GOOGLE_CLIENT_ID:", os.Getenv("GOOGLE_CLIENT_ID"))
-	fmt.Println("✅ GOOGLE_CLIENT_SECRET:", os.Getenv("GOOGLE_CLIENT_SECRET"))
+	// fmt.Println("✅ GOOGLE_CLIENT_ID:", os.Getenv("GOOGLE_CLIENT_ID"))
+	// fmt.Println("✅ GOOGLE_CLIENT_SECRET:", os.Getenv("GOOGLE_CLIENT_SECRET"))
 
-	// ✅ 설정
-	auth.SetupGoogleOAuth()
-	db.Init()
+	// ✅ 설정 (Google 로그인 비활성화)
+	// auth.SetupGoogleOAuth()
+	// db.Init()
 
 	r := gin.Default()
 
-	// ✅ Google OAuth 라우터
-	r.GET("/google/auth/login", auth.GoogleLoginHandler)
-	r.GET("/google/oauth2", auth.GoogleCallbackHandler)
+	// ✅ Google OAuth 라우터 (비활성화)
+	// r.GET("/google/auth/login", auth.GoogleLoginHandler)
+	// r.GET("/google/oauth2", auth.GoogleCallbackHandler)
 
 	// ✅ WebSocket 핸들러
 	handler := socket.NewHandler()
