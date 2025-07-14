@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"net/http"
+	"os"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/oauth2"
@@ -32,7 +32,7 @@ func SetupGoogleOAuth() {
 	}
 
 	googleOauthConfig = &oauth2.Config{
-		RedirectURL:  "http://localhost:8080/google/oauth2",
+		RedirectURL:  "http://localhost:8081/google/oauth2",
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		Scopes: []string{
