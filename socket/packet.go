@@ -19,6 +19,10 @@ const (
 	ResponseEmotion         = 2004
 
 	ResponseEndGame = 3000
+
+	ResponseCreateAccount  = 4000
+	ResponseLogin          = 4001
+	ResponseChangeNickName = 4002
 )
 
 // 클라이언트 요청 시그널 상수 (클라이언트 -> 서버)
@@ -29,6 +33,10 @@ const (
 	RequestReadyGame = 1011
 	RequestRingBell  = 2001
 	RequestEmotion   = 2004
+
+	RequestCreateAccount  = 4000
+	RequestLogin          = 4001
+	requestChangeNickName = 4002
 )
 
 // 패킷 구조체 - 모든 클라이언트 응답에 사용
@@ -92,12 +100,13 @@ func ValidateRequestPacket(data []byte) (*RequestPacket, error) {
 
 	// signal이 유효한지 확인
 	validSignals := map[int]bool{
-		RequestPing:      true,
-		RequestEnterRoom: true,
-		RequestLeaveRoom: true,
-		RequestReadyGame: true,
-		RequestRingBell:  true,
-		RequestEmotion:   true,
+		RequestPing:          true,
+		RequestEnterRoom:     true,
+		RequestLeaveRoom:     true,
+		RequestReadyGame:     true,
+		RequestRingBell:      true,
+		RequestEmotion:       true,
+		RequestCreateAccount: true,
 	}
 
 	if !validSignals[request.Signal] {
@@ -165,4 +174,16 @@ type RequestEmotionData struct {
 type ResponseEmotionData struct {
 	PlayerIndex int `json:"playerIndex"` // 감정표현을 한 플레이어 인덱스
 	EmotionType int `json:"emotionType"` // 감정표현 타입
+}
+
+// 계정 생성 요청 데이터 구조체
+type RequestCreateAccountData struct {
+	ID       string `json:"id"`       // 아이디
+	Password string `json:"password"` // 비밀번호
+	Nickname string `json:"nickname"` // 닉네임
+}
+
+// 계정 생성 응답 데이터 구조체
+type ResponseCreateAccountData struct {
+	ID string `json:"id"` // 생성된 계정의 아이디
 }

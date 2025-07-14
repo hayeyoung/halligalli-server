@@ -1,7 +1,9 @@
 package socket
 
 import (
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"sort"
@@ -11,6 +13,7 @@ import (
 	"math/rand"
 
 	"main/config"
+	"main/db"
 
 	"github.com/gorilla/websocket"
 )
@@ -223,6 +226,8 @@ func (h *Handler) handleMessage(client *Client, message []byte) {
 		h.handleRingBell(client)
 	case RequestEmotion:
 		h.handleEmotion(client, request)
+	case RequestCreateAccount:
+		h.handleCreateAccount(client, request)
 	default:
 		log.Printf("알 수 없는 요청 signal: %d", request.Signal)
 		h.sendErrorWithSignal(client, request.Signal, "알 수 없는 요청입니다")
@@ -1181,6 +1186,132 @@ func (h *Handler) handleEmotion(client *Client, request *RequestPacket) {
 	h.mu.RUnlock()
 
 	log.Printf("감정표현 전송 완료 - 플레이어 인덱스: %d, 감정타입: %d", playerIndex, emotionData.EmotionType)
+}
+
+// 계정 생성 처리
+func (h *Handler) handleCreateAccount(client *Client, request *RequestPacket) {
+	// 요청 데이터 파싱
+	var createAccountData RequestCreateAccountData
+
+	// request.Data가 map[string]interface{}인 경우를 처리
+	if dataMap, ok := request.Data.(map[string]interface{}); ok {
+		// ID 확인
+		if id, exists := dataMap["id"]; exists {
+			if idStr, ok := id.(string); ok {
+				createAccountData.ID = idStr
+			} else {
+				log.Printf("계정 생성 ID가 문자열이 아님: %v", id)
+				h.sendErrorWithSignal(client, RequestCreateAccount, "잘못된 ID 형식입니다")
+				return
+			}
+		} else {
+			log.Printf("계정 생성 데이터에 ID가 없음")
+			h.sendErrorWithSignal(client, RequestCreateAccount, "ID가 없습니다")
+			return
+		}
+
+		// Password 확인
+		if password, exists := dataMap["password"]; exists {
+			if passwordStr, ok := password.(string); ok {
+				createAccountData.Password = passwordStr
+			} else {
+				log.Printf("계정 생성 Password가 문자열이 아님: %v", password)
+				h.sendErrorWithSignal(client, RequestCreateAccount, "잘못된 Password 형식입니다")
+				return
+			}
+		} else {
+			log.Printf("계정 생성 데이터에 Password가 없음")
+			h.sendErrorWithSignal(client, RequestCreateAccount, "Password가 없습니다")
+			return
+		}
+
+		// Nickname 확인
+		if nickname, exists := dataMap["nickname"]; exists {
+			if nicknameStr, ok := nickname.(string); ok {
+				createAccountData.Nickname = nicknameStr
+			} else {
+				log.Printf("계정 생성 Nickname이 문자열이 아님: %v", nickname)
+				h.sendErrorWithSignal(client, RequestCreateAccount, "잘못된 Nickname 형식입니다")
+				return
+			}
+		} else {
+			log.Printf("계정 생성 데이터에 Nickname이 없음")
+			h.sendErrorWithSignal(client, RequestCreateAccount, "Nickname이 없습니다")
+			return
+		}
+	} else {
+		log.Printf("계정 생성 데이터 형식 오류: %v", request.Data)
+		h.sendErrorWithSignal(client, RequestCreateAccount, "잘못된 계정 생성 데이터 형식입니다")
+		return
+	}
+
+	// 데이터 유효성 검사
+	if createAccountData.ID == "" {
+		h.sendErrorWithSignal(client, RequestCreateAccount, "ID는 비어있을 수 없습니다")
+		return
+	}
+	if len(createAccountData.ID) > 10 {
+		h.sendErrorWithSignal(client, RequestCreateAccount, "ID는 10자를 넘을 수 없습니다")
+		return
+	}
+	if createAccountData.Password == "" {
+		h.sendErrorWithSignal(client, RequestCreateAccount, "Password는 비어있을 수 없습니다")
+		return
+	}
+	if len(createAccountData.Password) > 10 {
+		h.sendErrorWithSignal(client, RequestCreateAccount, "Password는 10자를 넘을 수 없습니다")
+		return
+	}
+	if createAccountData.Nickname == "" {
+		h.sendErrorWithSignal(client, RequestCreateAccount, "Nickname은 비어있을 수 없습니다")
+		return
+	}
+	if len(createAccountData.Nickname) > 10 {
+		h.sendErrorWithSignal(client, RequestCreateAccount, "Nickname은 10자를 넘을 수 없습니다")
+		return
+	}
+
+	log.Printf("계정 생성 요청: ID=%s, Nickname=%s", createAccountData.ID, createAccountData.Nickname)
+
+	// DB에 계정 정보 저장
+	if err := h.saveAccountToDB(createAccountData); err != nil {
+		log.Printf("계정 생성 실패: ID=%s, 오류=%v", createAccountData.ID, err)
+		h.sendErrorWithSignal(client, RequestCreateAccount, "계정 생성에 실패했습니다")
+		return
+	}
+
+	// 계정 생성 성공 응답
+	responseData := &ResponseCreateAccountData{
+		ID: createAccountData.ID,
+	}
+
+	response := NewSuccessResponse(ResponseCreateAccount, responseData)
+	h.sendToClient(client, response)
+
+	log.Printf("계정 생성 성공: ID=%s", createAccountData.ID)
+}
+
+// DB에 계정 정보 저장
+func (h *Handler) saveAccountToDB(accountData RequestCreateAccountData) error {
+	// 중복 ID 검사
+	var existingID string
+	err := db.DB.QueryRow("SELECT id FROM Users WHERE id = $1", accountData.ID).Scan(&existingID)
+	if err == nil {
+		// 이미 존재하는 ID
+		return fmt.Errorf("이미 존재하는 ID입니다")
+	} else if err != sql.ErrNoRows {
+		// DB 오류
+		return fmt.Errorf("DB 조회 오류: %v", err)
+	}
+
+	// 새 계정 저장
+	_, err = db.DB.Exec("INSERT INTO Users (id, password, nickname) VALUES ($1, $2, $3)",
+		accountData.ID, accountData.Password, accountData.Nickname)
+	if err != nil {
+		return fmt.Errorf("계정 저장 오류: %v", err)
+	}
+
+	return nil
 }
 
 // 공개된 모든 카드를 특정 플레이어의 손패에 추가

@@ -6,6 +6,7 @@ import (
 	// "main/auth"
 	// "main/db"
 
+	"main/db"
 	"main/socket"
 
 	"github.com/gin-gonic/gin"
@@ -28,7 +29,7 @@ func main() {
 
 	// ✅ 설정 (Google 로그인 비활성화)
 	// auth.SetupGoogleOAuth()
-	// db.Init()
+	db.Init()
 
 	r := gin.Default()
 
