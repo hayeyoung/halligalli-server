@@ -15,10 +15,9 @@ import (
 )
 
 type GoogleUser struct {
-	Id      string `json:"id"`
-	Email   string `json:"email"`
-	Name    string `json:"name"`
-	Picture string `json:"picture"`
+	Id    string `json:"id"`
+	Email string `json:"email"`
+	Name  string `json:"name"`
 }
 
 var googleOauthConfig *oauth2.Config
@@ -72,10 +71,10 @@ func GoogleCallbackHandler(c *gin.Context) {
 	}
 
 	_, err = db.DB.Exec(`
-        INSERT INTO users (google_id, email, name, picture)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO google_users (google_id, email, name)
+        VALUES ($1, $2, $3)
         ON CONFLICT (google_id) DO NOTHING
-    `, gu.Id, gu.Email, gu.Name, gu.Picture)
+    `, gu.Id, gu.Email, gu.Name)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "DB 저장 실패", "detail": err.Error()})
