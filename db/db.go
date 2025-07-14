@@ -11,7 +11,7 @@ var DB *sql.DB
 
 func Init() {
 	var err error
-	DB, err = sql.Open("postgres", "user=hayeyeong password=haye111612! dbname=hg sslmode=disable")
+	DB, err = sql.Open("postgres", "user=myuser password=987654 dbname=mydb sslmode=disable")
 	if err != nil {
 		log.Fatal("❌ DB 연결 실패:", err)
 	}
