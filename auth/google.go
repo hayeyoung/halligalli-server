@@ -71,7 +71,7 @@ func GoogleCallbackHandler(c *gin.Context) {
 	}
 
 	_, err = db.DB.Exec(`
-        INSERT INTO google_users (google_id, email, name)
+        INSERT INTO google_user (google_id, email, name)
         VALUES ($1, $2, $3)
         ON CONFLICT (google_id) DO NOTHING
     `, gu.Id, gu.Email, gu.Name)
