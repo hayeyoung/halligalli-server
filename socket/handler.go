@@ -229,6 +229,8 @@ func (h *Handler) handleMessage(client *Client, message []byte) {
 		h.handleEmotion(client, request)
 	case RequestCreateAccount:
 		h.handleCreateAccount(client, request)
+	case RequestLogin:
+		h.handleLogin(client, request)
 	default:
 		log.Printf("알 수 없는 요청 signal: %d", request.Signal)
 		h.sendErrorWithSignal(client, request.Signal, "알 수 없는 요청입니다")
@@ -1324,6 +1326,56 @@ func (h *Handler) saveAccountToDB(accountData RequestCreateAccountData) error {
 	}
 
 	return nil
+}
+
+// 로그인 처리 핸들러
+func (h *Handler) handleLogin(client *Client, request *RequestPacket) {
+	// 데이터 파싱
+	dataMap, ok := request.Data.(map[string]interface{})
+	if !ok {
+		h.sendErrorWithSignal(client, RequestLogin, "잘못된 로그인 데이터 형식입니다")
+		return	
+	}
+	if idVal == "" || pwVal == "" {
+		h.sendErrorWithSignal(client, RequestLogin, "ID와 Password는 비어있을 수 없습니다.")
+		return
+	}
+
+	// DB에서 해시된 비밀번호 조회
+	var storedHashedPassword string
+	err := db.DB.QueryRow("SELECT password FROM Users WHERE id = $1", idVal).Scan(&storedHashedPassword)
+
+	if err == sql.ErrNoRows {
+		// ID가 존재하지 않는 경우
+		h.sendErrorWithSignal(client, RequestLogin, "존재하지 않는 ID입니다.")
+		return
+	} else if err != nil {
+		h.sendErrorWithSignal(client, RequestLogin, "서버 오류로 로그인에 실패했습니다.")
+		return
+	}
+
+	// 비밀번호 검증
+	if !utils.CheckPasswordHash(pwVal, storedHashedPassword) {
+		h.sendErrorWithSignal(client, RequestLogin, "잘못된 비밀번호입니다.")
+		return
+	}
+
+	var nickname string
+	err = db.DB.QueryRow("SELECT nickname FROM Users WHERE id = $1", idVal).Scan(&nickname)
+	if err != nil {	
+		log.Printf("닉네임 조회 오류: %v", err)
+		nickname = "Unknown" // 기본값 설정
+	}
+
+	// 성공 패킷 생성
+	responseData := &ResponseLoginData{
+		Nickname: nickname
+	}
+	response := NewSuccessResponse(ResponseLogin, responseData)	
+	h.sendToClient(client, response)
+
+	log.Printf("로그인 성공: ID=%s, Nickname=%s", idVal, nickname)
+
 }
 
 // 공개된 모든 카드를 특정 플레이어의 손패에 추가
