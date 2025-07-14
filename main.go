@@ -19,7 +19,7 @@ func main() {
 	handler := socket.NewHandler()
 
 	// 서버 포트 설정 (환경변수에서 가져오거나 기본값 사용)
-	port := ":8080"
+	port := ":80"
 	if envPort := os.Getenv("PORT"); envPort != "" {
 		port = ":" + envPort
 	}
