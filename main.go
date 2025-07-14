@@ -13,6 +13,11 @@ import (
 	"github.com/joho/godotenv"
 )
 
+const (
+	// 서버 포트 설정
+	DefaultPort = ":8081"
+)
+
 func main() {
 	// ✅ .env 로드
 	err := godotenv.Load()
@@ -40,8 +45,8 @@ func main() {
 	})
 
 	// ✅ 서버 실행
-	log.Println("서버 시작: :8080 포트")
-	if err := r.Run(":8080"); err != nil {
+	log.Printf("서버 시작: %s 포트", DefaultPort)
+	if err := r.Run(DefaultPort); err != nil {
 		log.Fatal("서버 실행 실패:", err)
 	}
 }
