@@ -81,6 +81,10 @@ type Client struct {
 	// 방 참여 상태
 	IsInRoom bool   `json:"isInRoom"`
 	Username string `json:"username"`
+	// 로그인 상태
+	IsLoggedIn   bool   `json:"isLoggedIn"`
+	UserID       string `json:"userId"`       // 로그인한 사용자 ID
+	UserNickname string `json:"userNickname"` // 로그인한 사용자 닉네임
 }
 
 // 핸들러 구조체
@@ -280,9 +284,16 @@ func (h *Handler) handleEnterRoom(client *Client) {
 	}
 
 	// 플레이어를 방에 추가
+	username := "Player" + generateRandomNumber(4) // 기본값: 랜덤 숫자 4개를 사용자명으로
+
+	// 로그인된 사용자인 경우 닉네임 사용
+	if client.IsUserLoggedIn() {
+		username = client.UserNickname
+	}
+
 	player := &Player{
 		ID:       client.ID,
-		Username: "Player" + generateRandomNumber(4), // 랜덤 숫자 4개를 사용자명으로
+		Username: username,
 	}
 
 	GlobalRoom.mu.Lock()
@@ -439,6 +450,9 @@ func (h *Handler) handleLeaveRoom(client *Client) {
 	client.mu.Lock()
 	client.IsInRoom = false
 	client.Username = ""
+	client.IsLoggedIn = false
+	client.UserID = ""
+	client.UserNickname = ""
 	client.mu.Unlock()
 
 	// 방 나가기 성공 응답
@@ -754,6 +768,13 @@ func checkPassword(password, hash string) bool {
 	return err == nil
 }
 
+// 클라이언트 로그인 상태 확인
+func (c *Client) IsUserLoggedIn() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.IsLoggedIn
+}
+
 // 클라이언트 ID 생성
 func generateClientID() string {
 	return time.Now().Format("20060102150405") + "-" + randomString(6)
@@ -817,6 +838,9 @@ func (h *Handler) Run() {
 					client.mu.Lock()
 					client.IsInRoom = false
 					client.Username = ""
+					client.IsLoggedIn = false
+					client.UserID = ""
+					client.UserNickname = ""
 					client.mu.Unlock()
 
 					log.Printf("플레이어 방에서 제거: %s", client.ID)
@@ -828,6 +852,9 @@ func (h *Handler) Run() {
 					client.mu.Lock()
 					client.IsInRoom = false
 					client.Username = ""
+					client.IsLoggedIn = false
+					client.UserID = ""
+					client.UserNickname = ""
 					client.mu.Unlock()
 				}
 
@@ -1396,6 +1423,13 @@ func (h *Handler) handleLogin(client *Client, request *RequestPacket) {
 		h.sendErrorWithSignal(client, RequestLogin, "로그인에 실패했습니다")
 		return
 	}
+
+	// 클라이언트 로그인 상태 업데이트
+	client.mu.Lock()
+	client.IsLoggedIn = true
+	client.UserID = userData.ID
+	client.UserNickname = userData.Nickname
+	client.mu.Unlock()
 
 	// 로그인 성공 응답
 	responseData := &ResponseLoginData{
