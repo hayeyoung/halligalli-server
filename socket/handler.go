@@ -16,6 +16,7 @@ import (
 	"main/db"
 
 	"github.com/gorilla/websocket"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // WebSocket 업그레이더 설정
@@ -228,6 +229,8 @@ func (h *Handler) handleMessage(client *Client, message []byte) {
 		h.handleEmotion(client, request)
 	case RequestCreateAccount:
 		h.handleCreateAccount(client, request)
+	case RequestLogin:
+		h.handleLogin(client, request)
 	default:
 		log.Printf("알 수 없는 요청 signal: %d", request.Signal)
 		h.sendErrorWithSignal(client, request.Signal, "알 수 없는 요청입니다")
@@ -737,6 +740,18 @@ func (h *Handler) sendErrorWithSignal(client *Client, signal int, message string
 	log.Printf("에러 발생 (signal: %d): %s", signal, message)
 	errorResponse := NewErrorResponse(signal, message)
 	h.sendToClient(client, errorResponse)
+}
+
+// 비밀번호 해싱 함수
+func hashPassword(password string) (string, error) {
+	bytes, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	return string(bytes), err
+}
+
+// 비밀번호 검증 함수
+func checkPassword(password, hash string) bool {
+	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+	return err == nil
 }
 
 // 클라이언트 ID 생성
@@ -1304,14 +1319,122 @@ func (h *Handler) saveAccountToDB(accountData RequestCreateAccountData) error {
 		return fmt.Errorf("DB 조회 오류: %v", err)
 	}
 
-	// 새 계정 저장
+	// 비밀번호 해싱
+	hashedPassword, err := hashPassword(accountData.Password)
+	if err != nil {
+		return fmt.Errorf("비밀번호 해싱 오류: %v", err)
+	}
+
+	// 새 계정 저장 (해싱된 비밀번호 저장)
 	_, err = db.DB.Exec("INSERT INTO Users (id, password, nickname) VALUES ($1, $2, $3)",
-		accountData.ID, accountData.Password, accountData.Nickname)
+		accountData.ID, hashedPassword, accountData.Nickname)
 	if err != nil {
 		return fmt.Errorf("계정 저장 오류: %v", err)
 	}
 
 	return nil
+}
+
+// 로그인 처리
+func (h *Handler) handleLogin(client *Client, request *RequestPacket) {
+	// 요청 데이터 파싱
+	var loginData RequestLoginData
+
+	// request.Data가 map[string]interface{}인 경우를 처리
+	if dataMap, ok := request.Data.(map[string]interface{}); ok {
+		// ID 확인
+		if id, exists := dataMap["id"]; exists {
+			if idStr, ok := id.(string); ok {
+				loginData.ID = idStr
+			} else {
+				log.Printf("로그인 ID가 문자열이 아님: %v", id)
+				h.sendErrorWithSignal(client, RequestLogin, "잘못된 ID 형식입니다")
+				return
+			}
+		} else {
+			log.Printf("로그인 데이터에 ID가 없음")
+			h.sendErrorWithSignal(client, RequestLogin, "ID가 없습니다")
+			return
+		}
+
+		// Password 확인
+		if password, exists := dataMap["password"]; exists {
+			if passwordStr, ok := password.(string); ok {
+				loginData.Password = passwordStr
+			} else {
+				log.Printf("로그인 Password가 문자열이 아님: %v", password)
+				h.sendErrorWithSignal(client, RequestLogin, "잘못된 Password 형식입니다")
+				return
+			}
+		} else {
+			log.Printf("로그인 데이터에 Password가 없음")
+			h.sendErrorWithSignal(client, RequestLogin, "Password가 없습니다")
+			return
+		}
+	} else {
+		log.Printf("로그인 데이터 형식 오류: %v", request.Data)
+		h.sendErrorWithSignal(client, RequestLogin, "잘못된 로그인 데이터 형식입니다")
+		return
+	}
+
+	// 데이터 유효성 검사
+	if loginData.ID == "" {
+		h.sendErrorWithSignal(client, RequestLogin, "ID는 비어있을 수 없습니다")
+		return
+	}
+	if loginData.Password == "" {
+		h.sendErrorWithSignal(client, RequestLogin, "Password는 비어있을 수 없습니다")
+		return
+	}
+
+	log.Printf("로그인 요청: ID=%s", loginData.ID)
+
+	// DB에서 사용자 정보 확인
+	userData, err := h.verifyUserLogin(loginData)
+	if err != nil {
+		log.Printf("로그인 실패: ID=%s, 오류=%v", loginData.ID, err)
+		h.sendErrorWithSignal(client, RequestLogin, "로그인에 실패했습니다")
+		return
+	}
+
+	// 로그인 성공 응답
+	responseData := &ResponseLoginData{
+		ID:       userData.ID,
+		Nickname: userData.Nickname,
+	}
+
+	response := NewSuccessResponse(ResponseLogin, responseData)
+	h.sendToClient(client, response)
+
+	log.Printf("로그인 성공: ID=%s, Nickname=%s", userData.ID, userData.Nickname)
+}
+
+// DB에서 사용자 로그인 확인
+func (h *Handler) verifyUserLogin(loginData RequestLoginData) (*ResponseLoginData, error) {
+	var id, nickname string
+	var password string
+
+	// DB에서 사용자 정보 조회
+	err := db.DB.QueryRow("SELECT id, password, nickname FROM Users WHERE id = $1", loginData.ID).Scan(&id, &password, &nickname)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// 사용자가 존재하지 않음
+			return nil, fmt.Errorf("존재하지 않는 ID입니다")
+		}
+		// DB 오류
+		return nil, fmt.Errorf("DB 조회 오류: %v", err)
+	}
+
+	// 비밀번호 확인 (해싱된 비밀번호와 비교)
+	if !checkPassword(loginData.Password, password) {
+		return nil, fmt.Errorf("비밀번호가 일치하지 않습니다")
+	}
+
+	// 로그인 성공
+	return &ResponseLoginData{
+		ID:       id,
+		Nickname: nickname,
+	}, nil
 }
 
 // 공개된 모든 카드를 특정 플레이어의 손패에 추가

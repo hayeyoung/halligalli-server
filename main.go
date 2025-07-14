@@ -10,7 +10,6 @@ import (
 	"main/socket"
 
 	"github.com/gin-gonic/gin"
-	"github.com/joho/godotenv"
 )
 
 const (
@@ -19,16 +18,7 @@ const (
 )
 
 func main() {
-	// ✅ .env 로드 (Google 로그인 비활성화)
-	err := godotenv.Load()
-	if err != nil {
-		log.Fatal(".env 파일 로드 실패:", err)
-	}
-	// fmt.Println("✅ GOOGLE_CLIENT_ID:", os.Getenv("GOOGLE_CLIENT_ID"))
-	// fmt.Println("✅ GOOGLE_CLIENT_SECRET:", os.Getenv("GOOGLE_CLIENT_SECRET"))
 
-	// ✅ 설정 (Google 로그인 비활성화)
-	// auth.SetupGoogleOAuth()
 	db.Init()
 
 	r := gin.Default()

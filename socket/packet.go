@@ -20,9 +20,8 @@ const (
 
 	ResponseEndGame = 3000
 
-	ResponseCreateAccount  = 4000
-	ResponseLogin          = 4001
-	ResponseChangeNickName = 4002
+	ResponseCreateAccount = 4000
+	ResponseLogin         = 4001
 )
 
 // 클라이언트 요청 시그널 상수 (클라이언트 -> 서버)
@@ -34,9 +33,8 @@ const (
 	RequestRingBell  = 2001
 	RequestEmotion   = 2004
 
-	RequestCreateAccount  = 4000
-	RequestLogin          = 4001
-	requestChangeNickName = 4002
+	RequestCreateAccount = 4000
+	RequestLogin         = 4001
 )
 
 // 패킷 구조체 - 모든 클라이언트 응답에 사용
@@ -107,6 +105,7 @@ func ValidateRequestPacket(data []byte) (*RequestPacket, error) {
 		RequestRingBell:      true,
 		RequestEmotion:       true,
 		RequestCreateAccount: true,
+		RequestLogin:         true,
 	}
 
 	if !validSignals[request.Signal] {
@@ -186,4 +185,16 @@ type RequestCreateAccountData struct {
 // 계정 생성 응답 데이터 구조체
 type ResponseCreateAccountData struct {
 	ID string `json:"id"` // 생성된 계정의 아이디
+}
+
+// 로그인 요청 데이터 구조체
+type RequestLoginData struct {
+	ID       string `json:"id"`       // 아이디
+	Password string `json:"password"` // 비밀번호
+}
+
+// 로그인 응답 데이터 구조체
+type ResponseLoginData struct {
+	ID       string `json:"id"`       // 로그인한 유저의 아이디
+	Nickname string `json:"nickname"` // 로그인한 유저의 닉네임
 }
