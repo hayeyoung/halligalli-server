@@ -14,6 +14,7 @@ import (
 
 	"main/config"
 	"main/db"
+	"main/utils"
 
 	"github.com/gorilla/websocket"
 )
@@ -1272,6 +1273,15 @@ func (h *Handler) handleCreateAccount(client *Client, request *RequestPacket) {
 	}
 
 	log.Printf("계정 생성 요청: ID=%s, Nickname=%s", createAccountData.ID, createAccountData.Nickname)
+  
+	// ▶ 비밀번호 해싱
+	hashedPassword, err := utils.HashPassword(createAccountData.Password)
+	if err != nil {
+		log.Printf("비밀번호 해싱 실패: %v", err)
+		h.sendErrorWithSignal(client, RequestCreateAccount, "서버 오류로 계정 생성에 실패했습니다")
+		return
+	}
+	createAccountData.Password = hashedPassword
 
 	// DB에 계정 정보 저장
 	if err := h.saveAccountToDB(createAccountData); err != nil {
@@ -1304,9 +1314,11 @@ func (h *Handler) saveAccountToDB(accountData RequestCreateAccountData) error {
 		return fmt.Errorf("DB 조회 오류: %v", err)
 	}
 
-	// 새 계정 저장
-	_, err = db.DB.Exec("INSERT INTO Users (id, password, nickname) VALUES ($1, $2, $3)",
-		accountData.ID, accountData.Password, accountData.Nickname)
+	// ▶ 새 계정 저장: 비밀번호 대신 해시된 값을 사용
+	_, err = db.DB.Exec(
+		"INSERT INTO Users (id, password, nickname) VALUES ($1, $2, $3)",
+		accountData.ID, accountData.Password, accountData.Nickname,
+	)
 	if err != nil {
 		return fmt.Errorf("계정 저장 오류: %v", err)
 	}
