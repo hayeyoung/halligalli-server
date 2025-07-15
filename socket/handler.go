@@ -652,10 +652,10 @@ func (h *Handler) handleReadyGame(client *Client) {
 		// 게임 제한시간 타이머 시작
 		h.startGameTimer(room)
 
-		// 모든 클라이언트에게 게임 시작 패킷 전송
+		// 해당 방의 클라이언트들에게만 게임 시작 패킷 전송
 		h.mu.RLock()
 		for c := range h.clients {
-			if c.IsInRoom {
+			if c.IsInRoom && c.RoomID == room.ID {
 				response := NewSuccessResponse(ResponseReadyGame, map[string]interface{}{})
 				h.sendToClient(c, response)
 				log.Printf("클라이언트 %s (%s)에게 게임 시작 패킷 전송", c.ID, c.Username)
@@ -1172,10 +1172,10 @@ func (h *Handler) openCard(room *Room) {
 		PlayerIndex: playerIndex,
 	}
 
-	// 모든 클라이언트에게 카드 공개 패킷 전송
+	// 해당 방의 클라이언트들에게만 카드 공개 패킷 전송
 	h.mu.RLock()
 	for client := range h.clients {
-		if client.IsInRoom {
+		if client.IsInRoom && client.RoomID == room.ID {
 			response := NewSuccessResponse(ResponseOpenCard, openCardData)
 			h.sendToClient(client, response)
 		}
@@ -1264,10 +1264,10 @@ func (h *Handler) handleRingBell(client *Client) {
 			PlayerCards: updatedPlayerCards,
 		}
 
-		// 모든 클라이언트에게 성공 결과 전송
+		// 해당 방의 클라이언트들에게만 성공 결과 전송
 		h.mu.RLock()
 		for c := range h.clients {
-			if c.IsInRoom {
+			if c.IsInRoom && c.RoomID == room.ID {
 				response := NewSuccessResponse(ResponseRingBellCorrect, ringBellCorrectData)
 				h.sendToClient(c, response)
 			}
@@ -1299,10 +1299,10 @@ func (h *Handler) handleRingBell(client *Client) {
 			PlayerCards: updatedPlayerCards,
 		}
 
-		// 모든 클라이언트에게 실패 결과 전송
+		// 해당 방의 클라이언트들에게만 실패 결과 전송
 		h.mu.RLock()
 		for c := range h.clients {
-			if c.IsInRoom {
+			if c.IsInRoom && c.RoomID == room.ID {
 				response := NewSuccessResponse(ResponseRingBellWrong, ringBellWrongData)
 				h.sendToClient(c, response)
 			}
@@ -1394,10 +1394,10 @@ func (h *Handler) handleEmotion(client *Client, request *RequestPacket) {
 		EmotionType: emotionData.EmotionType,
 	}
 
-	// 모든 클라이언트에게 감정표현 패킷 전송
+	// 해당 방의 클라이언트들에게만 감정표현 패킷 전송
 	h.mu.RLock()
 	for c := range h.clients {
-		if c.IsInRoom {
+		if c.IsInRoom && c.RoomID == room.ID {
 			response := NewSuccessResponse(ResponseEmotion, responseEmotionData)
 			h.sendToClient(c, response)
 		}
@@ -2063,10 +2063,10 @@ func (h *Handler) endGameInternal(room *Room) {
 		PlayerRanks: playerRanks,
 	}
 
-	// 모든 클라이언트에게 게임 종료 패킷 전송
+	// 해당 방의 클라이언트들에게만 게임 종료 패킷 전송
 	h.mu.RLock()
 	for c := range h.clients {
-		if c.IsInRoom {
+		if c.IsInRoom && c.RoomID == room.ID {
 			response := NewSuccessResponse(ResponseEndGame, endGameData)
 			h.sendToClient(c, response)
 		}
@@ -2108,6 +2108,12 @@ func (h *Handler) endGameInternal(room *Room) {
 	}
 
 	log.Printf("게임 종료 완료 - 순위: %v", playerRanks)
+
+	// 게임 종료 후 방 삭제
+	h.roomMu.Lock()
+	delete(h.rooms, room.ID)
+	h.roomMu.Unlock()
+	log.Printf("게임 종료로 인한 방 삭제 완료 - 방 ID: %d", room.ID)
 }
 
 // 게임 종료 처리 (외부에서 호출되는 함수)
