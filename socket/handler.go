@@ -36,12 +36,18 @@ func init() {
 
 // 방 정보 구조체
 type Room struct {
-	mu            sync.RWMutex
-	players       map[string]*Player
-	maxPlayers    int
-	isGameStarted bool
-	playerCards   []int           // 각 플레이어별 카드 개수 (인덱스 기반)
-	readyPlayers  map[string]bool // 준비 완료한 플레이어들
+	ID      int    // 방 ID
+	Name    string // 방 이름
+	mu      sync.RWMutex
+	players map[string]*Player
+	// 방 세팅 관련 값
+	maxPlayers     int // 최대 인원 수
+	fruitVariation int // 과일 종류 수
+	fruitBellCount int // 종을 올바르게 치기 위한 과일 수
+	gameTempo      int // 게임 템포
+	isGameStarted  bool
+	playerCards    []int           // 각 플레이어별 카드 개수 (인덱스 기반)
+	readyPlayers   map[string]bool // 준비 완료한 플레이어들
 	// 플레이어 인덱스 매핑 (게임 시작 시 설정)
 	playerIndexes map[string]int // 플레이어 ID -> 인덱스 매핑
 	// 카드 공개 관련 상태
@@ -67,13 +73,6 @@ type Player struct {
 	Username string `json:"username"`
 }
 
-// 전역 방 인스턴스
-var GlobalRoom = &Room{
-	players:          make(map[string]*Player),
-	maxPlayers:       config.MaxPlayers, // 설정에서 가져온 최대 플레이어 수
-	lastEmotionTimes: make(map[string]time.Time),
-}
-
 // 클라이언트 구조체 (소켓 연결 정보)
 type Client struct {
 	ID       string          `json:"id"`
@@ -83,6 +82,7 @@ type Client struct {
 	mu       sync.Mutex      `json:"-"`
 	// 방 참여 상태
 	IsInRoom bool   `json:"isInRoom"`
+	RoomID   int    `json:"roomId"` // 참여 중인 방 ID
 	Username string `json:"username"`
 	// 로그인 상태
 	IsLoggedIn   bool   `json:"isLoggedIn"`
@@ -93,16 +93,19 @@ type Client struct {
 // 핸들러 구조체
 type Handler struct {
 	clients    map[*Client]bool
+	rooms      map[int]*Room // 방 ID -> Room 매핑
 	broadcast  chan []byte
 	register   chan *Client
 	unregister chan *Client
 	mu         sync.RWMutex
+	roomMu     sync.RWMutex // 방 관리를 위한 별도 뮤텍스
 }
 
 // 새로운 핸들러 생성
 func NewHandler() *Handler {
 	return &Handler{
 		clients:    make(map[*Client]bool),
+		rooms:      make(map[int]*Room),
 		broadcast:  make(chan []byte),
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
@@ -260,31 +263,54 @@ func (h *Handler) handleEnterRoom(client *Client) {
 		return
 	}
 
-	// 방 상태 확인
-	GlobalRoom.mu.RLock()
-	playerCount := len(GlobalRoom.players)
-	isGameStarted := GlobalRoom.isGameStarted
-	// 같은 ID의 플레이어가 이미 방에 있는지 확인
-	_, playerExists := GlobalRoom.players[client.ID]
-	GlobalRoom.mu.RUnlock()
+	// 방 ID 생성 (기본값: 1)
+	roomID := 1
+
+	// 방이 존재하지 않으면 생성
+	h.roomMu.Lock()
+	room, roomExists := h.rooms[roomID]
+	if !roomExists {
+		room = &Room{
+			ID:               roomID,
+			Name:             fmt.Sprintf("방 %d", roomID),
+			players:          make(map[string]*Player),
+			maxPlayers:       config.MaxPlayers, // 기본값: 설정에서 가져온 최대 플레이어 수
+			fruitVariation:   3,                 // 기본값: 3가지 과일
+			fruitBellCount:   5,                 // 기본값: 5개
+			gameTempo:        0,                 // 기본값: 3초 간격 (gameTempo 0)
+			lastEmotionTimes: make(map[string]time.Time),
+		}
+		h.rooms[roomID] = room
+		log.Printf("새로운 방 생성: %d (%s) - 최대인원:%d, 과일종류:%d, 벨개수:%d, 템포:%d",
+			roomID, room.Name, room.maxPlayers, room.fruitVariation, room.fruitBellCount, room.gameTempo)
+	}
+	h.roomMu.Unlock()
 
 	// 같은 ID의 플레이어가 이미 방에 있는지 확인
+	room.mu.RLock()
+	_, playerExists := room.players[client.ID]
+	room.mu.RUnlock()
+
 	if playerExists {
 		h.sendErrorWithSignal(client, RequestEnterRoom, "같은 ID의 플레이어가 이미 방에 있습니다")
 		return
 	}
 
 	// 방이 꽉 찼는지 확인
-	if playerCount >= GlobalRoom.maxPlayers {
+	room.mu.RLock()
+	if len(room.players) >= room.maxPlayers {
+		room.mu.RUnlock()
 		h.sendErrorWithSignal(client, RequestEnterRoom, "방이 꽉 찼습니다")
 		return
 	}
 
 	// 게임이 이미 시작된 상태인지 확인
-	if isGameStarted {
+	if room.isGameStarted {
+		room.mu.RUnlock()
 		h.sendErrorWithSignal(client, RequestEnterRoom, "게임이 이미 시작된 상태입니다")
 		return
 	}
+	room.mu.RUnlock()
 
 	// 플레이어를 방에 추가
 	username := "Player" + generateRandomNumber(4) // 기본값: 랜덤 숫자 4개를 사용자명으로
@@ -299,57 +325,65 @@ func (h *Handler) handleEnterRoom(client *Client) {
 		Username: username,
 	}
 
-	GlobalRoom.mu.Lock()
-	GlobalRoom.players[client.ID] = player
-	GlobalRoom.mu.Unlock()
+	room.mu.Lock()
+	room.players[client.ID] = player
+	room.mu.Unlock()
 
 	// 클라이언트 상태 업데이트
 	client.mu.Lock()
 	client.IsInRoom = true
+	client.RoomID = roomID
 	client.Username = player.Username
 	client.mu.Unlock()
 
 	// 방 입장 성공 응답
-	response := NewSuccessResponse(ResponseEnterRoom, map[string]interface{}{})
+	response := NewSuccessResponse(ResponseEnterRoom, map[string]interface{}{
+		"roomId":         roomID,
+		"roomName":       room.Name,
+		"maxPlayers":     room.maxPlayers,
+		"fruitVariation": room.fruitVariation,
+		"fruitBellCount": room.fruitBellCount,
+		"gameTempo":      room.gameTempo,
+	})
 	h.sendToClient(client, response)
 
-	log.Printf("플레이어 방 입장: %s (%s)", client.ID, player.Username)
+	log.Printf("플레이어 방 입장: %s (%s) -> %s", client.ID, player.Username, roomID)
 
 	// 현재 방 상태 로그 출력
-	GlobalRoom.mu.RLock()
-	currentPlayerCount := len(GlobalRoom.players)
-	GlobalRoom.mu.RUnlock()
-	log.Printf("현재 방 인원: %d/%d", currentPlayerCount, GlobalRoom.maxPlayers)
+	room.mu.RLock()
+	currentPlayerCount := len(room.players)
+	room.mu.RUnlock()
+	log.Printf("현재 방 인원: %d/%d", currentPlayerCount, room.maxPlayers)
 
 	// 게임 시작 조건 확인
-	h.checkAndStartGame()
+	h.checkAndStartGame(room)
 }
 
 // 게임 시작 조건 확인 및 게임 시작
-func (h *Handler) checkAndStartGame() {
-	GlobalRoom.mu.Lock()
-	defer GlobalRoom.mu.Unlock()
+func (h *Handler) checkAndStartGame(room *Room) {
+	room.mu.Lock()
+	defer room.mu.Unlock()
 
 	// 게임이 이미 시작된 상태인지 확인
-	if GlobalRoom.isGameStarted {
+	if room.isGameStarted {
 		return
 	}
 
 	// 방에 최대 인원이 들어왔는지 확인
-	if len(GlobalRoom.players) == GlobalRoom.maxPlayers {
+	if len(room.players) == room.maxPlayers {
 		// 게임 시작 상태로 변경
-		GlobalRoom.isGameStarted = true
+		room.isGameStarted = true
 
 		// 준비 완료 상태 초기화
-		GlobalRoom.readyPlayers = make(map[string]bool)
+		room.readyPlayers = make(map[string]bool)
 
 		// 플레이어 정보를 랜덤한 순서로 수집
-		playerNames := make([]string, 0, len(GlobalRoom.players))
-		playerIDs := make([]string, 0, len(GlobalRoom.players))
+		playerNames := make([]string, 0, len(room.players))
+		playerIDs := make([]string, 0, len(room.players))
 
 		// 플레이어 ID를 배열로 수집
-		playerIDList := make([]string, 0, len(GlobalRoom.players))
-		for playerID := range GlobalRoom.players {
+		playerIDList := make([]string, 0, len(room.players))
+		for playerID := range room.players {
 			playerIDList = append(playerIDList, playerID)
 		}
 
@@ -357,40 +391,40 @@ func (h *Handler) checkAndStartGame() {
 		shuffleStringSlice(playerIDList)
 
 		for _, playerID := range playerIDList {
-			player := GlobalRoom.players[playerID]
+			player := room.players[playerID]
 			playerNames = append(playerNames, player.Username)
 			playerIDs = append(playerIDs, player.ID)
 		}
 
 		// 각 플레이어에게 카드 분배 (인덱스 기반)
 		startingCards := config.StartingCards // 설정에서 가져온 시작 카드 수
-		GlobalRoom.playerCards = make([]int, len(GlobalRoom.players))
-		for i := range GlobalRoom.playerCards {
-			GlobalRoom.playerCards[i] = startingCards
+		room.playerCards = make([]int, len(room.players))
+		for i := range room.playerCards {
+			room.playerCards[i] = startingCards
 		}
 
 		// 공개된 카드 배열 초기화
-		GlobalRoom.publicFruitIndexes = make([]int, len(GlobalRoom.players))
-		GlobalRoom.publicFruitCounts = make([]int, len(GlobalRoom.players))
-		GlobalRoom.openCards = make([]int, len(GlobalRoom.players))
+		room.publicFruitIndexes = make([]int, len(room.players))
+		room.publicFruitCounts = make([]int, len(room.players))
+		room.openCards = make([]int, len(room.players))
 		// 초기값은 -1로 설정 (아직 카드가 공개되지 않음)
-		for i := range GlobalRoom.publicFruitIndexes {
-			GlobalRoom.publicFruitIndexes[i] = -1
-			GlobalRoom.publicFruitCounts[i] = -1
-			GlobalRoom.openCards[i] = 0
+		for i := range room.publicFruitIndexes {
+			room.publicFruitIndexes[i] = -1
+			room.publicFruitCounts[i] = -1
+			room.openCards[i] = 0
 		}
 
 		// 플레이어 인덱스 매핑 초기화 및 설정
-		GlobalRoom.playerIndexes = make(map[string]int)
+		room.playerIndexes = make(map[string]int)
 		for i, playerID := range playerIDs {
-			GlobalRoom.playerIndexes[playerID] = i
+			room.playerIndexes[playerID] = i
 		}
 
 		// 벨 누르기 상태 초기화
-		GlobalRoom.bellRung = false
+		room.bellRung = false
 
-		log.Printf("게임 시작! 플레이어 수: %d, 플레이어들: %v, 각자 카드 %d장", len(GlobalRoom.players), playerNames, startingCards)
-		log.Printf("플레이어 인덱스 매핑: %v", GlobalRoom.playerIndexes)
+		log.Printf("게임 시작! 플레이어 수: %d, 플레이어들: %v, 각자 카드 %d장", len(room.players), playerNames, startingCards)
+		log.Printf("플레이어 인덱스 매핑: %v", room.playerIndexes)
 
 		// 각 클라이언트에게 게임 시작 패킷 전송
 		h.mu.RLock()
@@ -407,7 +441,7 @@ func (h *Handler) checkAndStartGame() {
 
 				if myIndex != -1 {
 					gameStartData := &GameStartData{
-						PlayerCount:   len(GlobalRoom.players),
+						PlayerCount:   len(room.players),
 						PlayerNames:   playerNames,
 						MyIndex:       myIndex,
 						StartingCards: config.StartingCards, // 설정에서 가져온 시작 카드 수
@@ -434,20 +468,24 @@ func (h *Handler) handleLeaveRoom(client *Client) {
 	}
 
 	// 게임이 시작된 상태인지 확인
-	GlobalRoom.mu.RLock()
-	isGameStarted := GlobalRoom.isGameStarted
-	GlobalRoom.mu.RUnlock()
+	h.roomMu.RLock()
+	room, roomExists := h.rooms[client.RoomID]
+	h.roomMu.RUnlock()
 
-	// 게임이 이미 시작된 상태인지 확인
-	if isGameStarted {
+	if !roomExists {
+		h.sendErrorWithSignal(client, RequestLeaveRoom, "존재하지 않는 방입니다")
+		return
+	}
+
+	if room.isGameStarted {
 		h.sendErrorWithSignal(client, RequestLeaveRoom, "게임이 이미 시작된 상태입니다")
 		return
 	}
 
 	// 플레이어를 방에서 제거
-	GlobalRoom.mu.Lock()
-	delete(GlobalRoom.players, client.ID)
-	GlobalRoom.mu.Unlock()
+	room.mu.Lock()
+	delete(room.players, client.ID)
+	room.mu.Unlock()
 
 	// 클라이언트 상태 업데이트
 	client.mu.Lock()
@@ -465,24 +503,36 @@ func (h *Handler) handleLeaveRoom(client *Client) {
 	log.Printf("플레이어 방 퇴장: %s", client.ID)
 
 	// 게임이 시작된 상태였다면 게임 상태 리셋
-	if isGameStarted {
-		GlobalRoom.mu.Lock()
-		GlobalRoom.isGameStarted = false
-		GlobalRoom.playerCards = nil         // 카드 배열 초기화
-		GlobalRoom.readyPlayers = nil        // 준비 완료 상태 초기화
-		GlobalRoom.isCardGameStarted = false // 카드 게임 상태 초기화
-		GlobalRoom.publicFruitIndexes = nil  // 공개된 카드 배열 초기화
-		GlobalRoom.publicFruitCounts = nil   // 공개된 카드 배열 초기화
-		GlobalRoom.openCards = nil           // 공개된 카드 개수 배열 초기화
-		GlobalRoom.bellRung = false          // 벨 누르기 상태 초기화
-		GlobalRoom.isTimeExpired = false     // 시간제한 상태 초기화
-		GlobalRoom.playerIndexes = nil       // 플레이어 인덱스 매핑 초기화
-		if GlobalRoom.cardTimer != nil {
-			GlobalRoom.cardTimer.Stop() // 카드 타이머 정지
-			GlobalRoom.cardTimer = nil
+	if room.isGameStarted {
+		room.mu.Lock()
+		room.isGameStarted = false
+		room.playerCards = nil         // 카드 배열 초기화
+		room.readyPlayers = nil        // 준비 완료 상태 초기화
+		room.isCardGameStarted = false // 카드 게임 상태 초기화
+		room.publicFruitIndexes = nil  // 공개된 카드 배열 초기화
+		room.publicFruitCounts = nil   // 공개된 카드 배열 초기화
+		room.openCards = nil           // 공개된 카드 개수 배열 초기화
+		room.bellRung = false          // 벨 누르기 상태 초기화
+		room.isTimeExpired = false     // 시간제한 상태 초기화
+		room.playerIndexes = nil       // 플레이어 인덱스 매핑 초기화
+		if room.cardTimer != nil {
+			room.cardTimer.Stop() // 카드 타이머 정지
+			room.cardTimer = nil
 		}
-		GlobalRoom.mu.Unlock()
+		room.mu.Unlock()
 		log.Printf("플레이어 퇴장으로 인한 게임 상태 리셋")
+	}
+
+	// 방이 비었으면 방 삭제
+	room.mu.RLock()
+	if len(room.players) == 0 {
+		room.mu.RUnlock()
+		h.roomMu.Lock()
+		delete(h.rooms, client.RoomID)
+		h.roomMu.Unlock()
+		log.Printf("방이 비어서 삭제: %s", client.RoomID)
+	} else {
+		room.mu.RUnlock()
 	}
 }
 
@@ -495,21 +545,26 @@ func (h *Handler) handleReadyGame(client *Client) {
 	}
 
 	// 게임이 시작되지 않은 상태인지 확인
-	GlobalRoom.mu.RLock()
-	isGameStarted := GlobalRoom.isGameStarted
-	GlobalRoom.mu.RUnlock()
+	h.roomMu.RLock()
+	room, roomExists := h.rooms[client.RoomID]
+	h.roomMu.RUnlock()
 
-	if !isGameStarted {
+	if !roomExists {
+		h.sendErrorWithSignal(client, RequestReadyGame, "존재하지 않는 방입니다")
+		return
+	}
+
+	if !room.isGameStarted {
 		h.sendErrorWithSignal(client, RequestReadyGame, "게임이 시작되지 않은 상태입니다")
 		return
 	}
 
 	// 플레이어를 준비 완료 상태로 설정
-	GlobalRoom.mu.Lock()
-	GlobalRoom.readyPlayers[client.ID] = true
-	readyCount := len(GlobalRoom.readyPlayers)
-	totalPlayers := len(GlobalRoom.players)
-	GlobalRoom.mu.Unlock()
+	room.mu.Lock()
+	room.readyPlayers[client.ID] = true
+	readyCount := len(room.readyPlayers)
+	totalPlayers := len(room.players)
+	room.mu.Unlock()
 
 	log.Printf("플레이어 준비 완료: %s (%s) - 준비: %d/%d", client.ID, client.Username, readyCount, totalPlayers)
 
@@ -518,16 +573,16 @@ func (h *Handler) handleReadyGame(client *Client) {
 		log.Printf("모든 플레이어 준비 완료! 게임 시작!")
 
 		// 카드 게임 시작
-		GlobalRoom.mu.Lock()
-		GlobalRoom.isCardGameStarted = true
-		GlobalRoom.currentPlayerIndex = 0 // 첫 번째 플레이어부터 시작
-		GlobalRoom.mu.Unlock()
+		room.mu.Lock()
+		room.isCardGameStarted = true
+		room.currentPlayerIndex = 0 // 첫 번째 플레이어부터 시작
+		room.mu.Unlock()
 
 		// 카드 공개 타이머 시작
-		h.startCardTimer()
+		h.startCardTimer(room)
 
 		// 게임 제한시간 타이머 시작
-		h.startGameTimer()
+		h.startGameTimer(room)
 
 		// 모든 클라이언트에게 게임 시작 패킷 전송
 		h.mu.RLock()
@@ -618,7 +673,7 @@ func (r *Room) IsBellRingingTime() bool {
 
 	// 어떤 과일이라도 정확히 설정된 개수가 있으면 true 반환
 	for _, count := range fruitCounts {
-		if count == config.BellRingingFruitCount {
+		if count == r.fruitBellCount {
 			return true
 		}
 	}
@@ -645,7 +700,7 @@ func (r *Room) IsSpecificFruitBellRingingTime(fruitIndex int) bool {
 		}
 	}
 
-	return totalCount == config.BellRingingFruitCount
+	return totalCount == r.fruitBellCount
 }
 
 // 클라이언트에게 메시지 전송
@@ -824,22 +879,32 @@ func (h *Handler) Run() {
 
 			// 방에 참여한 상태라면 처리
 			if client.IsInRoom {
-				GlobalRoom.mu.RLock()
-				isGameStarted := GlobalRoom.isGameStarted
-				GlobalRoom.mu.RUnlock()
+				h.roomMu.RLock()
+				room, roomExists := h.rooms[client.RoomID]
+				h.roomMu.RUnlock()
 
-				if !isGameStarted {
+				if !roomExists {
+					log.Printf("방이 존재하지 않음: %s", client.RoomID)
+					client.mu.Lock()
+					client.IsInRoom = false
+					client.RoomID = 0
+					client.mu.Unlock()
+					continue
+				}
+
+				if !room.isGameStarted {
 					// 게임이 시작되지 않은 상태: LeaveRoom과 동일하게 처리
 					log.Printf("게임 시작 전 플레이어 연결 해제: %s (%s)", client.ID, client.Username)
 
 					// 플레이어를 방에서 제거
-					GlobalRoom.mu.Lock()
-					delete(GlobalRoom.players, client.ID)
-					GlobalRoom.mu.Unlock()
+					room.mu.Lock()
+					delete(room.players, client.ID)
+					room.mu.Unlock()
 
 					// 클라이언트 상태 업데이트
 					client.mu.Lock()
 					client.IsInRoom = false
+					client.RoomID = 0
 					client.Username = ""
 					client.IsLoggedIn = false
 					client.UserID = ""
@@ -847,6 +912,18 @@ func (h *Handler) Run() {
 					client.mu.Unlock()
 
 					log.Printf("플레이어 방에서 제거: %s", client.ID)
+
+					// 방이 비었으면 방 삭제
+					room.mu.RLock()
+					if len(room.players) == 0 {
+						room.mu.RUnlock()
+						h.roomMu.Lock()
+						delete(h.rooms, client.RoomID)
+						h.roomMu.Unlock()
+						log.Printf("방이 비어서 삭제: %s", client.RoomID)
+					} else {
+						room.mu.RUnlock()
+					}
 				} else {
 					// 게임이 시작된 상태: 단순히 브로드캐스트에서 제외
 					log.Printf("게임 진행 중 플레이어 연결 해제: %s (%s) - 브로드캐스트에서 제외", client.ID, client.Username)
@@ -854,6 +931,7 @@ func (h *Handler) Run() {
 					// 클라이언트 상태만 업데이트 (방에서는 제거하지 않음)
 					client.mu.Lock()
 					client.IsInRoom = false
+					client.RoomID = 0
 					client.Username = ""
 					client.IsLoggedIn = false
 					client.UserID = ""
@@ -862,7 +940,7 @@ func (h *Handler) Run() {
 				}
 
 				// 모든 플레이어가 연결을 끊었는지 확인
-				h.checkAllPlayersDisconnected()
+				h.checkAllPlayersDisconnected(room)
 			}
 
 		case message := <-h.broadcast:
@@ -881,10 +959,10 @@ func (h *Handler) Run() {
 }
 
 // 모든 플레이어가 연결을 끊었는지 확인하고 게임 종료
-func (h *Handler) checkAllPlayersDisconnected() {
-	GlobalRoom.mu.RLock()
-	isGameStarted := GlobalRoom.isGameStarted
-	GlobalRoom.mu.RUnlock()
+func (h *Handler) checkAllPlayersDisconnected(room *Room) {
+	room.mu.RLock()
+	isGameStarted := room.isGameStarted
+	room.mu.RUnlock()
 
 	// 게임이 시작되지 않았으면 무시
 	if !isGameStarted {
@@ -905,102 +983,119 @@ func (h *Handler) checkAllPlayersDisconnected() {
 	if connectedPlayers == 0 {
 		log.Printf("모든 플레이어가 연결을 끊어서 게임 종료")
 
-		GlobalRoom.mu.Lock()
+		room.mu.Lock()
 		// 게임 상태 초기화
-		GlobalRoom.isGameStarted = false
-		GlobalRoom.isCardGameStarted = false
-		GlobalRoom.playerCards = nil
-		GlobalRoom.readyPlayers = nil
-		GlobalRoom.publicFruitIndexes = nil           // 공개된 카드 배열 초기화
-		GlobalRoom.publicFruitCounts = nil            // 공개된 카드 배열 초기화
-		GlobalRoom.bellRung = false                   // 벨 누르기 상태 초기화
-		GlobalRoom.isTimeExpired = false              // 시간제한 상태 초기화
-		GlobalRoom.playerIndexes = nil                // 플레이어 인덱스 매핑 초기화
-		GlobalRoom.players = make(map[string]*Player) // 방 비우기
+		room.isGameStarted = false
+		room.isCardGameStarted = false
+		room.playerCards = nil
+		room.readyPlayers = nil
+		room.publicFruitIndexes = nil           // 공개된 카드 배열 초기화
+		room.publicFruitCounts = nil            // 공개된 카드 배열 초기화
+		room.bellRung = false                   // 벨 누르기 상태 초기화
+		room.isTimeExpired = false              // 시간제한 상태 초기화
+		room.playerIndexes = nil                // 플레이어 인덱스 매핑 초기화
+		room.players = make(map[string]*Player) // 방 비우기
 
 		// 카드 타이머 정지
-		if GlobalRoom.cardTimer != nil {
-			GlobalRoom.cardTimer.Stop()
-			GlobalRoom.cardTimer = nil
+		if room.cardTimer != nil {
+			room.cardTimer.Stop()
+			room.cardTimer = nil
 		}
-		GlobalRoom.mu.Unlock()
+		room.mu.Unlock()
 
 		log.Printf("게임 상태 초기화 완료")
 	}
 }
 
+// 게임 템포를 시간 간격으로 변환
+func getGameTempoInterval(gameTempo int) time.Duration {
+	switch gameTempo {
+	case 0:
+		return 3 * time.Second
+	case 1:
+		return 2 * time.Second
+	case 2:
+		return 1500 * time.Millisecond // 1.5초
+	case 3:
+		return 1 * time.Second
+	default:
+		return 3 * time.Second // 기본값
+	}
+}
+
 // 카드 공개 타이머 시작
-func (h *Handler) startCardTimer() {
+func (h *Handler) startCardTimer(room *Room) {
 	// 기존 타이머가 있다면 정지
-	if GlobalRoom.cardTimer != nil {
-		GlobalRoom.cardTimer.Stop()
+	if room.cardTimer != nil {
+		room.cardTimer.Stop()
 	}
 
-	// 설정된 간격마다 카드 공개
-	GlobalRoom.cardTimer = time.AfterFunc(time.Duration(config.CardOpenInterval)*time.Second, func() {
-		h.openCard()
+	// 게임 템포에 따른 간격으로 카드 공개
+	interval := getGameTempoInterval(room.gameTempo)
+	room.cardTimer = time.AfterFunc(interval, func() {
+		h.openCard(room)
 	})
 }
 
 // 카드 공개
-func (h *Handler) openCard() {
-	GlobalRoom.mu.Lock()
-	defer GlobalRoom.mu.Unlock()
+func (h *Handler) openCard(room *Room) {
+	room.mu.Lock()
+	defer room.mu.Unlock()
 
 	// 카드 게임이 시작되지 않았으면 무시
-	if !GlobalRoom.isCardGameStarted {
+	if !room.isCardGameStarted {
 		return
 	}
 
 	// 플레이어가 없으면 무시
-	totalPlayers := len(GlobalRoom.players)
+	totalPlayers := len(room.players)
 	if totalPlayers == 0 {
 		log.Printf("플레이어가 없어서 카드 공개 중단")
 		return
 	}
 
-	// 랜덤 과일 인덱스 (0-2)
-	fruitIndex := rand.Intn(3)
+	// 랜덤 과일 인덱스 (0 ~ fruitVariation-1)
+	fruitIndex := rand.Intn(room.fruitVariation)
 
-	// 랜덤 과일 개수 (1-5)
+	// 랜덤 과일 개수 (1 ~ 5)
 	fruitCount := rand.Intn(5) + 1
 
 	// 현재 플레이어 인덱스
-	playerIndex := GlobalRoom.currentPlayerIndex
+	playerIndex := room.currentPlayerIndex
 
 	// 카드를 가진 플레이어를 찾을 때까지 순환
 	originalPlayerIndex := playerIndex
-	for GlobalRoom.playerCards[playerIndex] <= 0 {
+	for room.playerCards[playerIndex] <= 0 {
 		// 다음 플레이어로 순환
-		GlobalRoom.currentPlayerIndex = (GlobalRoom.currentPlayerIndex + 1) % totalPlayers
-		playerIndex = GlobalRoom.currentPlayerIndex
+		room.currentPlayerIndex = (room.currentPlayerIndex + 1) % totalPlayers
+		playerIndex = room.currentPlayerIndex
 
 		// 한 바퀴 돌았는데도 카드를 가진 플레이어가 없으면 게임 종료
 		if playerIndex == originalPlayerIndex {
 			log.Printf("모든 플레이어가 카드를 가지고 있지 않아서 게임 종료")
 
 			// 각 플레이어가 공개한 카드를 자신의 손패로 되돌리기
-			GlobalRoom.returnOpenCardsToPlayers()
+			room.returnOpenCardsToPlayers()
 
 			log.Printf("=== openCard에서 endGameInternal 호출 ===")
-			h.endGameInternal()
+			h.endGameInternal(room)
 			return
 		}
 	}
 
 	// 플레이어 손패에서 카드 1장 제거
-	GlobalRoom.playerCards[playerIndex]--
-	GlobalRoom.openCards[playerIndex]++
+	room.playerCards[playerIndex]--
+	room.openCards[playerIndex]++
 
 	// 해당 플레이어의 공개된 카드 정보 업데이트
-	GlobalRoom.publicFruitIndexes[playerIndex] = fruitIndex
-	GlobalRoom.publicFruitCounts[playerIndex] = fruitCount
+	room.publicFruitIndexes[playerIndex] = fruitIndex
+	room.publicFruitCounts[playerIndex] = fruitCount
 
 	// 다음 플레이어로 순환 (카드를 낸 후)
-	GlobalRoom.currentPlayerIndex = (GlobalRoom.currentPlayerIndex + 1) % totalPlayers
+	room.currentPlayerIndex = (room.currentPlayerIndex + 1) % totalPlayers
 
 	// 벨 누르기 상태 리셋 (새로운 카드가 공개됨)
-	GlobalRoom.bellRung = false
+	room.bellRung = false
 
 	// 카드 공개 데이터 생성
 	openCardData := &OpenCardData{
@@ -1022,8 +1117,9 @@ func (h *Handler) openCard() {
 	log.Printf("카드 공개: 과일%d, 개수%d, 플레이어%d", fruitIndex, fruitCount, playerIndex)
 
 	// 다음 카드 공개 타이머 설정
-	GlobalRoom.cardTimer = time.AfterFunc(time.Duration(config.CardOpenInterval)*time.Second, func() {
-		h.openCard()
+	interval := getGameTempoInterval(room.gameTempo)
+	room.cardTimer = time.AfterFunc(interval, func() {
+		h.openCard(room)
 	})
 }
 
@@ -1036,34 +1132,39 @@ func (h *Handler) handleRingBell(client *Client) {
 	}
 
 	// 게임이 시작되지 않은 상태인지 확인
-	GlobalRoom.mu.RLock()
-	isGameStarted := GlobalRoom.isGameStarted
-	GlobalRoom.mu.RUnlock()
+	h.roomMu.RLock()
+	room, roomExists := h.rooms[client.RoomID]
+	h.roomMu.RUnlock()
 
-	if !isGameStarted {
+	if !roomExists {
+		h.sendErrorWithSignal(client, RequestRingBell, "존재하지 않는 방입니다")
+		return
+	}
+
+	if !room.isGameStarted {
 		h.sendErrorWithSignal(client, RequestRingBell, "게임이 시작되지 않은 상태입니다")
 		return
 	}
 
 	// 이미 벨이 눌렸는지 확인
-	GlobalRoom.mu.Lock()
-	if GlobalRoom.bellRung {
-		GlobalRoom.mu.Unlock()
+	room.mu.Lock()
+	if room.bellRung {
+		room.mu.Unlock()
 		log.Printf("플레이어 벨 누름 무시: %s (%s) - 이미 벨이 눌린 상태", client.ID, client.Username)
 		return
 	}
 
 	// 벨 누르기 상태 설정
-	GlobalRoom.bellRung = true
-	GlobalRoom.mu.Unlock()
+	room.bellRung = true
+	room.mu.Unlock()
 
 	// 종을 칠 수 있는 타이밍인지 확인
-	isBellRingingTime := GlobalRoom.IsBellRingingTime()
+	isBellRingingTime := room.IsBellRingingTime()
 
 	// 벨을 누른 플레이어의 인덱스 찾기 (게임 시작 시 설정된 인덱스 사용)
-	GlobalRoom.mu.RLock()
-	playerIndex, exists := GlobalRoom.playerIndexes[client.ID]
-	GlobalRoom.mu.RUnlock()
+	room.mu.RLock()
+	playerIndex, exists := room.playerIndexes[client.ID]
+	room.mu.RUnlock()
 
 	if !exists {
 		log.Printf("플레이어 인덱스를 찾을 수 없음: %s (%s)", client.ID, client.Username)
@@ -1074,20 +1175,20 @@ func (h *Handler) handleRingBell(client *Client) {
 	log.Printf("플레이어 벨 누름: %s (%s) - 종을 칠 수 있는 타이밍: %v, 플레이어 인덱스: %d", client.ID, client.Username, isBellRingingTime, playerIndex)
 
 	// OpenCard 타이머 초기화
-	h.resetCardTimer()
+	h.resetCardTimer(room)
 
 	// 벨 누르기 결과 처리
 	if isBellRingingTime {
 		// 벨을 올바르게 누른 경우, 공개된 모든 카드를 해당 플레이어의 손패에 추가
-		GlobalRoom.AddAllPublicCardsToPlayer(playerIndex)
+		room.AddAllPublicCardsToPlayer(playerIndex)
 		log.Printf("벨 누르기 성공! 플레이어 %d의 손패에 공개된 모든 카드 추가", playerIndex)
 
 		// 업데이트된 카드 개수 배열 가져오기
-		GlobalRoom.mu.RLock()
-		updatedPlayerCards := make([]int, len(GlobalRoom.playerCards))
-		copy(updatedPlayerCards, GlobalRoom.playerCards)
-		isTimeExpired := GlobalRoom.isTimeExpired
-		GlobalRoom.mu.RUnlock()
+		room.mu.RLock()
+		updatedPlayerCards := make([]int, len(room.playerCards))
+		copy(updatedPlayerCards, room.playerCards)
+		isTimeExpired := room.isTimeExpired
+		room.mu.RUnlock()
 
 		// 성공 데이터 생성
 		ringBellCorrectData := &RingBellCorrectData{
@@ -1110,18 +1211,18 @@ func (h *Handler) handleRingBell(client *Client) {
 		// 시간제한이 끝난 후 올바르게 종을 친 경우 게임 종료
 		if isTimeExpired {
 			log.Printf("시간제한 후 올바른 벨 누르기로 게임 종료")
-			h.endGame()
+			h.endGame(room)
 		}
 	} else {
 		// 벨을 잘못 누른 경우, 다른 플레이어들에게 카드 분배
-		cardGivenTo := GlobalRoom.DistributeCardsFromPlayer(playerIndex)
+		cardGivenTo := room.DistributeCardsFromPlayer(playerIndex)
 		log.Printf("벨 누르기 실패! 플레이어 %d가 다른 플레이어들에게 카드 분배", playerIndex)
 
 		// 업데이트된 카드 개수 배열 다시 가져오기
-		GlobalRoom.mu.RLock()
-		updatedPlayerCards := make([]int, len(GlobalRoom.playerCards))
-		copy(updatedPlayerCards, GlobalRoom.playerCards)
-		GlobalRoom.mu.RUnlock()
+		room.mu.RLock()
+		updatedPlayerCards := make([]int, len(room.playerCards))
+		copy(updatedPlayerCards, room.playerCards)
+		room.mu.RUnlock()
 
 		// 실패 데이터 생성
 		ringBellWrongData := &RingBellWrongData{
@@ -1153,11 +1254,16 @@ func (h *Handler) handleEmotion(client *Client, request *RequestPacket) {
 	}
 
 	// 게임이 시작되지 않은 상태인지 확인
-	GlobalRoom.mu.RLock()
-	isGameStarted := GlobalRoom.isGameStarted
-	GlobalRoom.mu.RUnlock()
+	h.roomMu.RLock()
+	room, roomExists := h.rooms[client.RoomID]
+	h.roomMu.RUnlock()
 
-	if !isGameStarted {
+	if !roomExists {
+		h.sendErrorWithSignal(client, RequestEmotion, "존재하지 않는 방입니다")
+		return
+	}
+
+	if !room.isGameStarted {
 		h.sendErrorWithSignal(client, RequestEmotion, "게임이 시작되지 않은 상태입니다")
 		return
 	}
@@ -1187,24 +1293,24 @@ func (h *Handler) handleEmotion(client *Client, request *RequestPacket) {
 	}
 
 	// 1초 이내 중복 감정표현 체크
-	GlobalRoom.mu.Lock()
-	lastTime, exists := GlobalRoom.lastEmotionTimes[client.ID]
+	room.mu.Lock()
+	lastTime, exists := room.lastEmotionTimes[client.ID]
 	now := time.Now()
 
 	if exists && now.Sub(lastTime) < time.Duration(config.EmotionCooldown)*time.Second {
-		GlobalRoom.mu.Unlock()
+		room.mu.Unlock()
 		log.Printf("감정표현 무시: %s (%s) - %d초 이내 중복 감정표현", client.ID, client.Username, config.EmotionCooldown)
 		return
 	}
 
 	// 마지막 감정표현 시간 업데이트
-	GlobalRoom.lastEmotionTimes[client.ID] = now
-	GlobalRoom.mu.Unlock()
+	room.lastEmotionTimes[client.ID] = now
+	room.mu.Unlock()
 
 	// 플레이어 인덱스 찾기
-	GlobalRoom.mu.RLock()
-	playerIndex, exists := GlobalRoom.playerIndexes[client.ID]
-	GlobalRoom.mu.RUnlock()
+	room.mu.RLock()
+	playerIndex, exists := room.playerIndexes[client.ID]
+	room.mu.RUnlock()
 
 	if !exists {
 		log.Printf("플레이어 인덱스를 찾을 수 없음: %s (%s)", client.ID, client.Username)
@@ -1633,16 +1739,16 @@ func calculatePlayerRanks(playerCards []int) []int {
 }
 
 // 게임 종료 처리 (뮤텍스가 이미 잠겨있는 경우를 위한 내부 함수)
-func (h *Handler) endGameInternal() {
+func (h *Handler) endGameInternal(room *Room) {
 	log.Printf("=== 게임 종료 함수 호출됨 ===")
 	log.Printf("게임 제한시간 종료 - 게임 종료")
 
 	// 각 플레이어가 공개한 카드를 자신의 손패로 되돌리기
-	GlobalRoom.returnOpenCardsToPlayers()
+	room.returnOpenCardsToPlayers()
 
 	// 현재 플레이어 카드 개수와 순위 계산
-	playerCards := make([]int, len(GlobalRoom.playerCards))
-	copy(playerCards, GlobalRoom.playerCards)
+	playerCards := make([]int, len(room.playerCards))
+	copy(playerCards, room.playerCards)
 	playerRanks := calculatePlayerRanks(playerCards)
 
 	// 게임 종료 데이터 생성
@@ -1662,58 +1768,61 @@ func (h *Handler) endGameInternal() {
 	h.mu.RUnlock()
 
 	// 게임 상태 초기화
-	GlobalRoom.isGameStarted = false
-	GlobalRoom.isCardGameStarted = false
-	GlobalRoom.playerCards = nil
-	GlobalRoom.readyPlayers = nil
-	GlobalRoom.publicFruitIndexes = nil
-	GlobalRoom.publicFruitCounts = nil
-	GlobalRoom.openCards = nil
-	GlobalRoom.bellRung = false
-	GlobalRoom.isTimeExpired = false
-	GlobalRoom.playerIndexes = nil
-	GlobalRoom.players = make(map[string]*Player)
-	GlobalRoom.lastEmotionTimes = make(map[string]time.Time)
+	room.isGameStarted = false
+	room.isCardGameStarted = false
+	room.playerCards = nil
+	room.readyPlayers = nil
+	room.publicFruitIndexes = nil
+	room.publicFruitCounts = nil
+	room.openCards = nil
+	room.bellRung = false
+	room.isTimeExpired = false
+	room.playerIndexes = nil
+	room.players = make(map[string]*Player)
+	room.lastEmotionTimes = make(map[string]time.Time)
 
 	// 모든 클라이언트의 방 참여 상태 초기화
 	h.mu.RLock()
 	for c := range h.clients {
-		c.IsInRoom = false
+		if c.RoomID == room.ID {
+			c.IsInRoom = false
+			c.RoomID = 0
+		}
 	}
 	h.mu.RUnlock()
 
 	// 타이머들 정지
-	if GlobalRoom.cardTimer != nil {
-		GlobalRoom.cardTimer.Stop()
-		GlobalRoom.cardTimer = nil
+	if room.cardTimer != nil {
+		room.cardTimer.Stop()
+		room.cardTimer = nil
 	}
-	if GlobalRoom.gameTimer != nil {
-		GlobalRoom.gameTimer.Stop()
-		GlobalRoom.gameTimer = nil
+	if room.gameTimer != nil {
+		room.gameTimer.Stop()
+		room.gameTimer = nil
 	}
 
 	log.Printf("게임 종료 완료 - 순위: %v", playerRanks)
 }
 
 // 게임 종료 처리 (외부에서 호출되는 함수)
-func (h *Handler) endGame() {
-	GlobalRoom.mu.Lock()
-	defer GlobalRoom.mu.Unlock()
-	h.endGameInternal()
+func (h *Handler) endGame(room *Room) {
+	room.mu.Lock()
+	defer room.mu.Unlock()
+	h.endGameInternal(room)
 }
 
 // 게임 타이머 시작
-func (h *Handler) startGameTimer() {
+func (h *Handler) startGameTimer(room *Room) {
 	// 기존 게임 타이머가 있다면 정지
-	if GlobalRoom.gameTimer != nil {
-		GlobalRoom.gameTimer.Stop()
+	if room.gameTimer != nil {
+		room.gameTimer.Stop()
 	}
 
 	// 설정된 제한시간 후 시간제한 플래그 설정
-	GlobalRoom.gameTimer = time.AfterFunc(time.Duration(config.GameTimeLimit)*time.Second, func() {
-		GlobalRoom.mu.Lock()
-		GlobalRoom.isTimeExpired = true
-		GlobalRoom.mu.Unlock()
+	room.gameTimer = time.AfterFunc(time.Duration(config.GameTimeLimit)*time.Second, func() {
+		room.mu.Lock()
+		room.isTimeExpired = true
+		room.mu.Unlock()
 		log.Printf("게임 제한시간 종료 - 누군가가 올바르게 종을 칠 때까지 게임 계속 진행")
 	})
 
@@ -1721,19 +1830,19 @@ func (h *Handler) startGameTimer() {
 }
 
 // OpenCard 타이머 초기화
-func (h *Handler) resetCardTimer() {
-	GlobalRoom.mu.Lock()
-	defer GlobalRoom.mu.Unlock()
+func (h *Handler) resetCardTimer(room *Room) {
+	room.mu.Lock()
+	defer room.mu.Unlock()
 
 	// 기존 타이머가 있다면 정지
-	if GlobalRoom.cardTimer != nil {
-		GlobalRoom.cardTimer.Stop()
-		GlobalRoom.cardTimer = nil
+	if room.cardTimer != nil {
+		room.cardTimer.Stop()
+		room.cardTimer = nil
 	}
 
 	// 새로운 타이머 시작 (설정된 간격 후)
-	GlobalRoom.cardTimer = time.AfterFunc(time.Duration(config.CardOpenInterval)*time.Second, func() {
-		h.openCard()
+	room.cardTimer = time.AfterFunc(time.Duration(config.CardOpenInterval)*time.Second, func() {
+		h.openCard(room)
 	})
 
 	log.Printf("OpenCard 타이머 초기화 완료")
