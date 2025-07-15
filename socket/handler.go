@@ -15,11 +15,9 @@ import (
 	"main/config"
 	"main/db"
 	"main/utils"
-	"main/game"
+
 	"github.com/gorilla/websocket"
 )
-
-var roomManager = NewRoomManager()
 
 // WebSocket 업그레이더 설정
 var upgrader = websocket.Upgrader{
@@ -233,16 +231,6 @@ func (h *Handler) handleMessage(client *Client, message []byte) {
 		h.handleCreateAccount(client, request)
 	case RequestLogin:
 		h.handleLogin(client, request)
-	case RequestListRooms:
-		h.handleListRooms(client)
-	case RequestCreateRoom:
-		h.handleCreateRoom(client, request)
-	case RequestJoinRoom:
-		h.handleJoinRoom(client, request)
-	case RequestLeaveRoom:
-		h.handleLeaveRoom(client, request)
-  case RequestStartGame:
-    h.handleStartGame(client, request)
 	default:
 		log.Printf("알 수 없는 요청 signal: %d", request.Signal)
 		h.sendErrorWithSignal(client, request.Signal, "알 수 없는 요청입니다")
@@ -850,124 +838,6 @@ func (h *Handler) Run() {
 	}
 }
 
-// 방 목록 조회
-func (h *Handler) handleListRooms(client *Client) {
-    rooms := roomManager.ListRooms()                 // RoomInfo 슬라이스 반환
-    response := NewSuccessResponse(ResponseListRooms, rooms)
-    h.sendToClient(client, response)
-}
-
-// 방 생성
-func (h *Handler) handleCreateRoom(client *Client, req *RequestPacket) {
-    var data CreateRoomData
-    // 언마샬 & 에러체크
-    raw, _ := json.Marshal(req.Data)
-    if err := json.Unmarshal(raw, &data); err != nil {
-        h.sendErrorWithSignal(client, RequestCreateRoom, "잘못된 데이터")
-        return
-    }
-
-    roomID, err := roomManager.CreateRoom(client.ID, data.MaxPlayers, data.Tempo, data.FruitCount)
-    if err != nil {
-        h.sendErrorWithSignal(client, RequestCreateRoom, err.Error())
-        return
-    }
-
-    // 생성된 방 정보 응답
-    info := roomManager.GetRoomInfo(roomID)
-    response := NewSuccessResponse(ResponseCreateRoom, info)
-    h.sendToClient(client, response)
-}
-
-// 3) 방 입장
-func (h *Handler) handleJoinRoom(client *Client, req *RequestPacket) {
-    var data JoinRoomData
-    raw, _ := json.Marshal(req.Data)
-    if err := json.Unmarshal(raw, &data); err != nil {
-        h.sendErrorWithSignal(client, RequestJoinRoom, "잘못된 데이터")
-        return
-    }
-
-    err := roomManager.JoinRoom(data.RoomID, client.ID)
-    if err != nil {
-        h.sendErrorWithSignal(client, RequestJoinRoom, err.Error())
-        return
-    }
-
-    info := roomManager.GetRoomInfo(data.RoomID)
-    response := NewSuccessResponse(ResponseJoinRoom, info)
-    h.sendToClient(client, response)
-
-		// **자동 시작된 경우**: 방에 모인 모든 플레이어에게 StartGame 패킷도 보내기
-  if info.GameStarted {
-    for _, pid := range info.Players {
-      if cli := h.findClientByID(pid); cli != nil {
-        h.sendToClient(cli, NewSuccessResponse(ResponseStartGame, info))
-      }
-    }
-  }
-}
-
-// 4) 방 나가기
-func (h *Handler) handleLeaveRoom(client *Client, req *RequestPacket) {
-    var data JoinRoomData // RoomID만 쓰므로 동일 구조체 재활용
-    raw, _ := json.Marshal(req.Data)
-    if err := json.Unmarshal(raw, &data); err != nil {
-        h.sendErrorWithSignal(client, RequestLeaveRoom, "잘못된 데이터")
-        return
-    }
-
-    roomManager.LeaveRoom(data.RoomID, client.ID)
-    response := NewSuccessResponse(ResponseLeaveRoom, map[string]string{"roomId": data.RoomID})
-    h.sendToClient(client, response)
-}
-
-// 5) 방 설정 변경 (호스트만)
-func (h *Handler) handleRoomSettings(client *Client, req *RequestPacket) {
-    var data CreateRoomData
-    raw, _ := json.Marshal(req.Data)
-    if err := json.Unmarshal(raw, &data); err != nil {
-        h.sendErrorWithSignal(client, RequestRoomSettings, "잘못된 데이터")
-        return
-    }
-
-    err := roomManager.UpdateSettings(data.RoomID, client.ID, data.MaxPlayers, data.Tempo, data.FruitCount)
-    if err != nil {
-        h.sendErrorWithSignal(client, RequestRoomSettings, err.Error())
-        return
-    }
-
-    info := roomManager.GetRoomInfo(data.RoomID)
-    response := NewSuccessResponse(ResponseRoomSettings, info)
-    h.sendToClient(client, response)
-}
-
-// 6) 게임 시작 요청
-func (h *Handler) handleStartGame(client *Client, req *RequestPacket) {
-    var data JoinRoomData
-    raw, _ := json.Marshal(req.Data)
-    if err := json.Unmarshal(raw, &data); err != nil {
-        h.sendErrorWithSignal(client, RequestStartGame, "잘못된 데이터")
-        return
-    }
-
-    err := roomManager.StartGame(data.RoomID, client.ID)
-    if err != nil {
-        h.sendErrorWithSignal(client, RequestStartGame, err.Error())
-        return
-    }
-
-    // 방에 있는 모든 클라이언트에게 StartGame 패킷 브로드캐스트
-    info := roomManager.GetRoomInfo(data.RoomID)
-    for c := range h.clients {
-        // c가 해당 방에 속해 있으면…
-        if roomManager.IsInRoom(data.RoomID, c.ID) {
-            response := NewSuccessResponse(ResponseStartGame, info)
-            h.sendToClient(c, response)
-        }
-    }
-}
-
 // 모든 플레이어가 연결을 끊었는지 확인하고 게임 종료
 func (h *Handler) checkAllPlayersDisconnected() {
 	GlobalRoom.mu.RLock()
@@ -1499,7 +1369,7 @@ func (h *Handler) handleLogin(client *Client, request *RequestPacket) {
 
 	// 성공 패킷 생성
 	responseData := &ResponseLoginData{
-		Nickname: nickname,
+		Nickname: nickname
 	}
 	response := NewSuccessResponse(ResponseLogin, responseData)	
 	h.sendToClient(client, response)
