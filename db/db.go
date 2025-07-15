@@ -13,11 +13,16 @@ func Init() {
 	var err error
 	DB, err = sql.Open("postgres", "user=myuser password=987654 dbname=mydb sslmode=disable")
 	if err != nil {
-		log.Fatal("❌ DB 연결 실패:", err)
+		log.Printf("❌ DB 연결 실패: %v", err)
+		DB = nil
+		return
 	}
 
 	if err := DB.Ping(); err != nil {
-		log.Fatal("❌ DB Ping 실패:", err)
+		log.Printf("❌ DB Ping 실패: %v", err)
+		DB.Close()
+		DB = nil
+		return
 	}
 
 	log.Println("✅ DB 연결 성공")

@@ -6,6 +6,33 @@
 
 이 서버는 WebSocket 연결, Ping/Pong 기능, 방 관리, 게임 시작 기능을 제공합니다.
 
+## DB 사용 설정
+
+로컬 테스트를 위해 DB 사용 여부를 제어할 수 있습니다.
+
+### 환경변수 설정
+
+- `USE_DATABASE=true`: DB 사용 (기본값)
+- `USE_DATABASE=false`: DB 사용 안함 (로컬 테스트 모드)
+
+### 사용 예시
+
+```bash
+# DB 사용 (기본)
+go run main.go
+
+# DB 사용 안함 (로컬 테스트)
+USE_DATABASE=false go run main.go
+```
+
+### 로컬 테스트 모드 특징
+
+- DB 연결 없이 서버 실행 가능
+- DB 연결 실패 시에도 서버가 계속 실행됨
+- 계정 생성 시 항상 성공으로 처리
+- 로그인 시 입력한 ID로 "LocalUser" + ID 형태의 닉네임 자동 생성
+- 실제 DB 저장/조회 작업 없이 게임 기능만 테스트 가능
+
 ## 게임 설정
 
 게임 관련 설정값들은 `config/game_config.go` 파일에서 관리됩니다.

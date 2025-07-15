@@ -2,6 +2,8 @@ package main
 
 import (
 	"log"
+	"os"
+	"strconv"
 
 	// "main/auth"
 	// "main/db"
@@ -18,8 +20,25 @@ const (
 )
 
 func main() {
+	// DB 사용 여부 설정 (환경변수 USE_DATABASE로 제어)
+	useDatabase := true
+	if envUseDB := os.Getenv("USE_DATABASE"); envUseDB != "" {
+		if parsed, err := strconv.ParseBool(envUseDB); err == nil {
+			useDatabase = parsed
+		}
+	}
 
-	db.Init()
+	// socket 패키지의 UseDatabase 변수 설정
+	socket.UseDatabase = useDatabase
+
+	log.Printf("DB 사용 여부: %v", useDatabase)
+
+	// DB 사용 시에만 DB 초기화
+	if useDatabase {
+		db.Init()
+	} else {
+		log.Printf("로컬 테스트 모드: DB 초기화 건너뛰기")
+	}
 
 	r := gin.Default()
 

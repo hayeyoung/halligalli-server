@@ -19,6 +19,9 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// DB 사용 여부를 제어하는 변수 (로컬 테스트용)
+var UseDatabase = true
+
 // WebSocket 업그레이더 설정
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
@@ -1335,6 +1338,12 @@ func (h *Handler) handleCreateAccount(client *Client, request *RequestPacket) {
 
 // DB에 계정 정보 저장
 func (h *Handler) saveAccountToDB(accountData RequestCreateAccountData) error {
+	if !UseDatabase || db.DB == nil {
+		// 로컬 테스트 모드이거나 DB가 연결되지 않은 경우 DB 작업을 건너뛰고 성공으로 반환
+		log.Printf("로컬 테스트 모드 또는 DB 미연결: DB 저장 건너뛰기 - ID=%s", accountData.ID)
+		return nil
+	}
+
 	// 중복 ID 검사
 	var existingID string
 	err := db.DB.QueryRow("SELECT id FROM Users WHERE id = $1", accountData.ID).Scan(&existingID)
@@ -1445,6 +1454,15 @@ func (h *Handler) handleLogin(client *Client, request *RequestPacket) {
 
 // DB에서 사용자 로그인 확인
 func (h *Handler) verifyUserLogin(loginData RequestLoginData) (*ResponseLoginData, error) {
+	if !UseDatabase || db.DB == nil {
+		// 로컬 테스트 모드이거나 DB가 연결되지 않은 경우 DB 작업을 건너뛰고 성공으로 반환
+		log.Printf("로컬 테스트 모드 또는 DB 미연결: DB 로그인 확인 건너뛰기 - ID=%s", loginData.ID)
+		return &ResponseLoginData{
+			ID:       loginData.ID,
+			Nickname: "LocalUser" + loginData.ID, // 로컬 테스트용 닉네임
+		}, nil
+	}
+
 	var id, nickname string
 	var password string
 
