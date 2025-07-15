@@ -23,6 +23,13 @@ const (
 	ResponseCreateAccount  = 4000
 	ResponseLogin          = 4001
 	ResponseChangeNickName = 4002
+
+	ResponseListRooms    = 2100
+  ResponseCreateRoom   = 2101
+  ResponseJoinRoom     = 2102
+  ResponseLeaveRoom    = 2103
+  ResponseRoomSettings = 2104
+  ResponseStartGame    = 2105
 )
 
 // 클라이언트 요청 시그널 상수 (클라이언트 -> 서버)
@@ -37,6 +44,13 @@ const (
 	RequestCreateAccount  = 4000
 	RequestLogin          = 4001
 	requestChangeNickName = 4002
+
+	RequestListRooms    = 1100
+	RequestCreateRoom   = 1101
+  RequestJoinRoom     = 1102
+  RequestLeaveRoom    = 1103
+  RequestRoomSettings = 1104
+  RequestStartGame    = 1105
 )
 
 // 패킷 구조체 - 모든 클라이언트 응답에 사용
@@ -107,6 +121,14 @@ func ValidateRequestPacket(data []byte) (*RequestPacket, error) {
 		RequestRingBell:      true,
 		RequestEmotion:       true,
 		RequestCreateAccount: true,
+		RequestLogin:         true,
+
+		RequestListRooms:    true,
+		RequestCreateRoom:   true,
+		RequestJoinRoom:     true,
+		RequestLeaveRoom:    true,
+		RequestRoomSettings: true,
+		RequestStartGame:    true,
 	}
 
 	if !validSignals[request.Signal] {
@@ -187,3 +209,27 @@ type RequestCreateAccountData struct {
 type ResponseCreateAccountData struct {
 	ID string `json:"id"` // 생성된 계정의 아이디
 }
+
+// RequestCreateRoom 신호에 담겨 오는 JSON 바디
+type CreateRoomData struct {
+    MaxPlayers int    `json:"maxPlayers"`
+    Tempo      string `json:"tempo"`
+    FruitCount int    `json:"fruitCount"`
+}
+
+// RequestJoinRoom 신호에 담겨 오는 JSON 바디
+type JoinRoomData struct {
+    RoomID string `json:"roomId"`
+}
+
+// 방 목록 조회나 방 생성·입장 응답에 사용될 방 정보
+type RoomInfo struct {
+    RoomID      string   `json:"roomId"`
+    HostID      string   `json:"hostId"`
+    Players     []string `json:"players"`
+    MaxPlayers  int      `json:"maxPlayers"`
+    Tempo       string   `json:"tempo"`
+    FruitCount  int      `json:"fruitCount"`
+    GameStarted bool     `json:"gameStarted"`
+}
+

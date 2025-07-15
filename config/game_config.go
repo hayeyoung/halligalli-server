@@ -2,8 +2,13 @@ package config
 
 // 게임 설정 상수들
 const (
+
+	MaxRooms = 6
+
 	// 방 설정
-	MaxPlayers = 4 // 방에 들어갈 수 있는 최대 플레이어 수
+	MaxPlayers = 8 // 방에 들어갈 수 있는 최대 플레이어 수
+
+	MinPlayers = 2 // 방에 들어갈 수 있는 최소 플레이어 수
 
 	// 벨 누르기 설정s
 	BellRingingFruitCount = 5 // 종을 올바르게 치기 위한 과일 개수

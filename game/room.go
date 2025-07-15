@@ -5,6 +5,28 @@ import (
 	"time"
 )
 
+// 방 생성시 외부에서 넘겨줄 설정값들
+type RoomConfig struct {
+	MaxPlayers        int // 방에 들어갈 수 있는 최대 플레이어 수
+	Tempo             int // 게임 템포
+	FruitCount        int // 과일 카드 수
+}
+
+// NewRoom 방 생성자 : 설정을 받고 내부 필드를 초기화
+func NewRoom(cfg RoomConfig) *Room {
+	r := &Room{
+		mu:             sync.RWMutex{},
+		Players:        make([]*Player, 0),	
+		RevealedCards: make([]Card, 0),
+		LastActivity:  time.Now(),
+
+		maxPlayers: cfg.MaxPlayers,
+		tempo:      cfg.Tempo,
+		fruitCount: cfg.FruitCount,
+	}
+	return r
+}
+
 // 단일 방 구조체
 type Room struct {
 	mu             sync.RWMutex
@@ -16,6 +38,10 @@ type Room struct {
 	PlayerHands    [][]Card
 	Deck           []Card
 	LastActivity   time.Time
+
+	maxPlayers       int
+	tempo            int
+	fruitCount       int
 }
 
 // 플레이어 구조체
@@ -26,12 +52,6 @@ type Player struct {
 	IsActive bool   `json:"isActive"`
 }
 
-// 전역 단일 방 인스턴스
-var GlobalRoom = &Room{
-	Players:       make([]*Player, 0),
-	RevealedCards: make([]Card, 0),
-	LastActivity:  time.Now(),
-}
 
 // 방에 플레이어 추가
 func (r *Room) AddPlayer(clientID, username string) *Player {
@@ -166,3 +186,6 @@ func (r *Room) GetRoomInfo() map[string]interface{} {
 		"revealedCards": len(r.RevealedCards),
 	}
 }
+
+
+
