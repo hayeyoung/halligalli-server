@@ -12,7 +12,7 @@ const (
 	CardOpenInterval = 2 // 카드 공개 간격 (초)
 
 	// 게임 시작 설정
-	StartingCards = 10 // 게임 시작 시 각 플레이어가 받는 카드 수
+	StartingCards = 30 // 게임 시작 시 각 플레이어가 받는 카드 수
 
 	// 게임 제한시간 설정
 	GameTimeLimit = 120 // 게임 제한시간 (초)

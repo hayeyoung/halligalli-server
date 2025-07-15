@@ -1079,15 +1079,15 @@ func (h *Handler) checkAllPlayersDisconnected(room *Room) {
 func getGameTempoInterval(gameTempo int) time.Duration {
 	switch gameTempo {
 	case 0:
-		return 3 * time.Second
-	case 1:
 		return 2 * time.Second
-	case 2:
-		return 1500 * time.Millisecond // 1.5초
-	case 3:
+	case 1:
 		return 1 * time.Second
+	case 2:
+		return 750 * time.Millisecond // 1.5초
+	case 3:
+		return 500 * time.Millisecond
 	default:
-		return 3 * time.Second // 기본값
+		return 2 * time.Second // 기본값
 	}
 }
 
