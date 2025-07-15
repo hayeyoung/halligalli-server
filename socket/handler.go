@@ -958,6 +958,40 @@ func (h *Handler) Run() {
 					client.RoomID = 0
 					client.mu.Unlock()
 					continue
+				} else { // 방이 존재하는 경우
+					//players 맵에서 삭제
+					room.mu.Lock()
+					delete(room.players, client.ID)
+					room.mu.Unlock()	
+
+					log.Printf("방에서 제거: %s -> 방 %d", client.ID, client.RoomID)
+
+					// 나간 이후 클라이언트 상태 초기화
+					client.mu.Lock()
+					client.IsInRoom = false
+					client.RoomID = 0
+					client.Username = ""
+					client.IsLoggedIn = false
+					client.UserID = ""	
+					client.UserNickname = ""
+					client.mu.Unlock()
+
+					// 방 내 인원 변경 알림
+					h.notifyPlayerCountChanged(room)
+
+					// 방이 비었으면 방 삭제
+					room.mu.RLock()
+					empty := len(room.players) == 0 
+					room.mu.RUnlock()
+					if empty {
+						h.roomMu.Lock()
+						delete(h.rooms, client.RoomID)
+						h.roomMu.Unlock()
+						log.Printf("방이 비어서 삭제: %s", client.RoomID)
+					} else {
+						log.Printf("방에 남은 플레이어 수: %d", len(room.players))
+					}
+
 				}
 
 				if !room.isGameStarted {
