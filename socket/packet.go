@@ -7,9 +7,13 @@ import (
 
 // 패킷 시그널 상수 (서버 -> 클라이언트)
 const (
-	ResponsePong      = 1
-	ResponseEnterRoom = 1001
-	ResponseLeaveRoom = 1002
+	ResponsePong               = 1
+	ResponseEnterRoom          = 1001
+	ResponseLeaveRoom          = 1002
+	ResponseGetRoomList        = 1003
+	ResponseCreateRoom         = 1004
+	ResponsePlayerCountChanged = 1005
+
 	ResponseStartGame = 1010
 	ResponseReadyGame = 1011
 
@@ -26,9 +30,12 @@ const (
 
 // 클라이언트 요청 시그널 상수 (클라이언트 -> 서버)
 const (
-	RequestPing      = 1
-	RequestEnterRoom = 1001
-	RequestLeaveRoom = 1002
+	RequestPing        = 1
+	RequestEnterRoom   = 1001
+	RequestLeaveRoom   = 1002
+	RequestGetRoomList = 1003
+	RequestCreateRoom  = 1004
+
 	RequestReadyGame = 1011
 	RequestRingBell  = 2001
 	RequestEmotion   = 2004
@@ -101,11 +108,13 @@ func ValidateRequestPacket(data []byte) (*RequestPacket, error) {
 		RequestPing:          true,
 		RequestEnterRoom:     true,
 		RequestLeaveRoom:     true,
+		RequestGetRoomList:   true,
 		RequestReadyGame:     true,
 		RequestRingBell:      true,
 		RequestEmotion:       true,
 		RequestCreateAccount: true,
 		RequestLogin:         true,
+		RequestCreateRoom:    true,
 	}
 
 	if !validSignals[request.Signal] {
@@ -197,4 +206,39 @@ type RequestLoginData struct {
 type ResponseLoginData struct {
 	ID       string `json:"id"`       // 로그인한 유저의 아이디
 	Nickname string `json:"nickname"` // 로그인한 유저의 닉네임
+}
+
+// 방 정보 데이터 구조체
+type RoomInfo struct {
+	RoomID         int    `json:"roomID"`         // 방 ID
+	RoomName       string `json:"roomName"`       // 방 이름
+	PlayerCount    int    `json:"playerCount"`    // 현재 플레이어 수
+	MaxPlayerCount int    `json:"maxPlayerCount"` // 최대 플레이어 수
+	FruitVariation int    `json:"fruitVariation"` // 과일 종류 수
+	FruitCount     int    `json:"fruitCount"`     // 종을 올바르게 치기 위한 과일 수
+	Speed          int    `json:"speed"`          // 게임 템포
+}
+
+// 방 생성 요청 데이터 구조체
+type RequestCreateRoomData struct {
+	RoomName       string `json:"roomName"`       // 방 이름
+	MaxPlayerCount int    `json:"maxPlayerCount"` // 최대 플레이어 수
+	FruitVariation int    `json:"fruitVariation"` // 과일 종류 수
+	FruitCount     int    `json:"fruitCount"`     // 종을 올바르게 치기 위한 과일 수
+	Speed          int    `json:"speed"`          // 게임 템포
+}
+
+// 방 생성 응답 데이터 구조체
+type ResponseCreateRoomData struct {
+	RoomID int `json:"roomID"` // 생성된 방의 ID
+}
+
+// 방 입장 요청 데이터 구조체
+type RequestEnterRoomData struct {
+	RoomID int `json:"roomId"` // 입장할 방 ID
+}
+
+// 플레이어 수 변경 응답 데이터 구조체
+type ResponsePlayerCountChangedData struct {
+	PlayerCount int `json:"playerCount"` // 현재 방의 플레이어 수
 }

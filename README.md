@@ -97,6 +97,9 @@ USE_DATABASE=false go run main.go
   - `1`: Pong (핑 응답)
   - `1001`: EnterRoom (방 입장 응답)
   - `1002`: LeaveRoom (방 나가기 응답)
+  - `1003`: GetRoomList (방 목록 조회 응답)
+  - `1004`: CreateRoom (방 생성 응답)
+  - `1005`: PlayerCountChanged (플레이어 수 변경)
   - `1010`: StartGame (게임 시작)
   - `1011`: ReadyGame (게임 준비 완료)
   - `2000`: OpenCard (카드 공개)
@@ -125,6 +128,8 @@ USE_DATABASE=false go run main.go
   - `1`: Ping (핑 요청)
   - `1001`: EnterRoom (방 입장 요청)
   - `1002`: LeaveRoom (방 나가기 요청)
+  - `1003`: GetRoomList (방 목록 조회 요청)
+  - `1004`: CreateRoom (방 생성 요청)
   - `1011`: ReadyGame (게임 준비 완료 요청)
   - `2001`: RingBell (벨 누르기 요청)
 
@@ -142,13 +147,33 @@ USE_DATABASE=false go run main.go
 // 방 입장 요청
 {
   "signal": 1001,
-  "data": {}
+  "data": {
+    "roomId": 1
+  }
 }
 
 // 방 나가기 요청
 {
   "signal": 1002,
   "data": {}
+}
+
+// 방 목록 조회 요청
+{
+  "signal": 1003,
+  "data": {}
+}
+
+// 방 생성 요청
+{
+  "signal": 1004,
+  "data": {
+    "roomName": "내 방",
+    "maxPlayerCount": 4,
+    "fruitVariation": 3,
+    "fruitCount": 5,
+    "speed": 0
+  }
 }
 
 // 게임 준비 완료 요청
@@ -205,6 +230,179 @@ USE_DATABASE=false go run main.go
 - **signal**: 1011 (게임 준비 완료)
 - **data**: 빈 객체 (추가 데이터 없음)
 - **code**: 200 (성공)
+
+### 방 목록 조회 패킷 (ResponseGetRoomList)
+
+방 목록을 조회할 때 전송되는 패킷입니다.
+
+```json
+{
+  "signal": 1003,
+  "data": {
+    "rooms": [
+      {
+        "roomID": 1,
+        "roomName": "방 1",
+        "playerCount": 2,
+        "maxPlayerCount": 4,
+        "fruitVariation": 3,
+        "fruitCount": 5,
+        "speed": 0
+      }
+    ]
+  },
+  "code": 200
+}
+```
+
+#### RoomInfo 필드 설명
+
+- **roomID**: 방 ID (정수)
+- **roomName**: 방 이름 (문자열)
+- **playerCount**: 현재 플레이어 수 (정수)
+- **maxPlayerCount**: 최대 플레이어 수 (정수)
+- **fruitVariation**: 과일 종류 수 (정수)
+- **fruitCount**: 종을 올바르게 치기 위한 과일 수 (정수)
+- **speed**: 게임 템포 (정수)
+  - 0: 3초 간격
+  - 1: 2초 간격
+  - 2: 1.5초 간격
+  - 3: 1초 간격
+
+**참고**: 게임 중인 방은 목록에 포함되지 않습니다.
+
+### 방 생성 패킷 (RequestCreateRoom / ResponseCreateRoom)
+
+방을 생성할 때 사용되는 패킷입니다.
+
+#### 요청 예시
+```json
+{
+  "signal": 1004,
+  "data": {
+    "roomName": "내 방",
+    "maxPlayerCount": 4,
+    "fruitVariation": 3,
+    "fruitCount": 5,
+    "speed": 0
+  }
+}
+```
+
+#### 응답 예시
+```json
+{
+  "signal": 1004,
+  "data": {
+    "roomID": 2
+  },
+  "code": 200
+}
+```
+
+#### RequestCreateRoomData 필드 설명
+
+- **roomName**: 방 이름 (문자열, 필수)
+- **maxPlayerCount**: 최대 플레이어 수 (정수, 2-8)
+- **fruitVariation**: 과일 종류 수 (정수, 1-5)
+- **fruitCount**: 종을 올바르게 치기 위한 과일 수 (정수, 1-10)
+- **speed**: 게임 템포 (정수, 0-3)
+  - 0: 3초 간격
+  - 1: 2초 간격
+  - 2: 1.5초 간격
+  - 3: 1초 간격
+
+#### ResponseCreateRoomData 필드 설명
+
+- **roomID**: 생성된 방의 ID (정수)
+
+#### 방 생성 시스템
+
+1. 클라이언트가 `RequestCreateRoom`을 서버에 전송합니다
+2. 서버는 요청받은 세팅값으로 새 방을 생성합니다
+3. 방 생성 성공 시 `ResponseCreateRoom`을 전송합니다
+4. 이후 즉시 `ResponseEnterRoom`을 전송하여 방에 입장했음을 알립니다
+5. 방 생성자는 자동으로 해당 방에 입장됩니다
+
+**참고**: 방 생성 후 즉시 방에 입장되므로 별도의 `RequestEnterRoom`이 필요하지 않습니다.
+
+### 방 입장 패킷 (RequestEnterRoom / ResponseEnterRoom)
+
+특정 방에 입장할 때 사용되는 패킷입니다.
+
+#### 요청 예시
+```json
+{
+  "signal": 1001,
+  "data": {
+    "roomId": 1
+  }
+}
+```
+
+#### 응답 예시
+```json
+{
+  "signal": 1001,
+  "data": {
+    "roomId": 1,
+    "roomName": "방 1",
+    "maxPlayers": 4,
+    "fruitVariation": 3,
+    "fruitBellCount": 5,
+    "gameTempo": 0
+  },
+  "code": 200
+}
+```
+
+#### RequestEnterRoomData 필드 설명
+
+- **roomId**: 입장할 방 ID (정수, 1 이상)
+
+#### ResponseEnterRoom 필드 설명
+
+- **roomId**: 입장한 방 ID (정수)
+- **roomName**: 방 이름 (문자열)
+- **maxPlayers**: 최대 플레이어 수 (정수)
+- **fruitVariation**: 과일 종류 수 (정수)
+- **fruitBellCount**: 종을 올바르게 치기 위한 과일 수 (정수)
+- **gameTempo**: 게임 템포 (정수)
+
+#### 방 입장 시스템
+
+1. 클라이언트가 `RequestEnterRoom`을 서버에 전송합니다
+2. 서버는 요청받은 방 ID로 방을 찾거나 새로 생성합니다
+3. 방 입장 성공 시 `ResponseEnterRoom`을 전송합니다
+4. 이후 `ResponsePlayerCountChanged`를 방의 모든 클라이언트에게 전송합니다
+
+**참고**: 존재하지 않는 방 ID를 요청하면 자동으로 새 방이 생성됩니다.
+
+### 플레이어 수 변경 패킷 (ResponsePlayerCountChanged)
+
+방에 플레이어가 들어오거나 나갈 때 모든 클라이언트에게 전송되는 패킷입니다.
+
+#### 응답 예시
+```json
+{
+  "signal": 1005,
+  "data": {
+    "playerCount": 3
+  },
+  "code": 200
+}
+```
+
+#### ResponsePlayerCountChangedData 필드 설명
+
+- **playerCount**: 현재 방의 플레이어 수 (정수)
+
+#### 플레이어 수 변경 시스템
+
+1. 플레이어가 방에 입장하거나 나갈 때 자동으로 전송됩니다
+2. 방에 속한 모든 클라이언트에게 동시에 전송됩니다
+3. 게임이 시작된 후에는 전송되지 않습니다
+4. 클라이언트는 이 패킷을 받아서 UI의 플레이어 수 표시를 업데이트할 수 있습니다
 
 ### 카드 공개 패킷 (ResponseOpenCard)
 
@@ -306,18 +504,36 @@ errorPacket := NewErrorResponse(RequestPing, "잘못된 요청입니다")
 
 ### 방 관리 시스템
 
+#### 방 생성 (RequestCreateRoom)
+- 클라이언트가 새 방 생성을 요청합니다
+- 이미 방에 참여한 상태인 경우 에러를 반환합니다
+- 요청받은 세팅값으로 새 방을 생성합니다
+- 방 생성 성공 시 `ResponseCreateRoom`을 전송합니다
+- 이후 즉시 `ResponseEnterRoom`을 전송하여 방에 입장했음을 알립니다
+- 방 생성자는 자동으로 해당 방에 입장됩니다
+
 #### 방 입장 (RequestEnterRoom)
-- 클라이언트가 방에 입장을 요청합니다
+- 클라이언트가 특정 방에 입장을 요청합니다
+- 요청 데이터에 `roomId` 필드가 필요합니다
 - 이미 방에 있는 경우 에러를 반환합니다
 - 방이 꽉 찬 경우 에러를 반환합니다
 - 게임이 이미 시작된 경우 에러를 반환합니다
+- 존재하지 않는 방인 경우 자동으로 새 방을 생성합니다
 - 성공 시 클라이언트의 방 참여 상태가 업데이트됩니다
+- 방에 입장한 모든 클라이언트에게 `ResponsePlayerCountChanged` 패킷이 전송됩니다
 
 #### 방 나가기 (RequestLeaveRoom)
 - 클라이언트가 방에서 나가기를 요청합니다
 - 방에 참여하지 않은 경우 에러를 반환합니다
 - 게임이 이미 시작된 경우 에러를 반환합니다
 - 성공 시 클라이언트의 방 참여 상태가 초기화됩니다
+- 방에 남은 모든 클라이언트에게 `ResponsePlayerCountChanged` 패킷이 전송됩니다
+
+#### 플레이어 수 변경 (ResponsePlayerCountChanged)
+- 방에 플레이어가 들어오거나 나갈 때 자동으로 전송됩니다
+- 방에 속한 모든 클라이언트에게 동시에 전송됩니다
+- 게임이 시작된 후에는 전송되지 않습니다
+- 클라이언트는 이 패킷을 받아서 UI의 플레이어 수 표시를 업데이트할 수 있습니다
 
 #### 게임 시작 (ResponseStartGame)
 - 방에 최대 인원(4명)이 들어왔을 때 자동으로 게임이 시작됩니다

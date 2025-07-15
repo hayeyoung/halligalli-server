@@ -228,9 +228,13 @@ func (h *Handler) handleMessage(client *Client, message []byte) {
 	case RequestPing:
 		h.handlePing(client)
 	case RequestEnterRoom:
-		h.handleEnterRoom(client)
+		h.handleEnterRoom(client, request)
 	case RequestLeaveRoom:
 		h.handleLeaveRoom(client)
+	case RequestGetRoomList:
+		h.handleGetRoomList(client)
+	case RequestCreateRoom:
+		h.handleCreateRoom(client, request)
 	case RequestReadyGame:
 		h.handleReadyGame(client)
 	case RequestRingBell:
@@ -256,15 +260,48 @@ func (h *Handler) handlePing(client *Client) {
 }
 
 // 방 입장 처리
-func (h *Handler) handleEnterRoom(client *Client) {
+func (h *Handler) handleEnterRoom(client *Client, request *RequestPacket) {
 	// 이미 방에 참여한 상태인지 확인
 	if client.IsInRoom {
 		h.sendErrorWithSignal(client, RequestEnterRoom, "이미 방에 참여한 상태입니다")
 		return
 	}
 
-	// 방 ID 생성 (기본값: 1)
-	roomID := 1
+	// 요청 데이터 파싱
+	var enterRoomData RequestEnterRoomData
+
+	// request.Data가 map[string]interface{}인 경우를 처리
+	if dataMap, ok := request.Data.(map[string]interface{}); ok {
+		// RoomID 확인
+		if roomId, exists := dataMap["roomId"]; exists {
+			if roomIdFloat, ok := roomId.(float64); ok {
+				enterRoomData.RoomID = int(roomIdFloat)
+			} else {
+				log.Printf("방 ID가 숫자가 아님: %v", roomId)
+				h.sendErrorWithSignal(client, RequestEnterRoom, "잘못된 방 ID 형식입니다")
+				return
+			}
+		} else {
+			log.Printf("방 입장 데이터에 roomId가 없음")
+			h.sendErrorWithSignal(client, RequestEnterRoom, "방 ID가 없습니다")
+			return
+		}
+	} else {
+		log.Printf("방 입장 데이터 형식 오류: %v", request.Data)
+		h.sendErrorWithSignal(client, RequestEnterRoom, "잘못된 방 입장 데이터 형식입니다")
+		return
+	}
+
+	// 데이터 유효성 검사
+	if enterRoomData.RoomID <= 0 {
+		h.sendErrorWithSignal(client, RequestEnterRoom, "방 ID는 1 이상이어야 합니다")
+		return
+	}
+
+	log.Printf("방 입장 요청: 클라이언트 %s -> 방 %d", client.ID, enterRoomData.RoomID)
+
+	// 방 ID 설정
+	roomID := enterRoomData.RoomID
 
 	// 방이 존재하지 않으면 생성
 	h.roomMu.Lock()
@@ -354,6 +391,9 @@ func (h *Handler) handleEnterRoom(client *Client) {
 	currentPlayerCount := len(room.players)
 	room.mu.RUnlock()
 	log.Printf("현재 방 인원: %d/%d", currentPlayerCount, room.maxPlayers)
+
+	// 방의 모든 클라이언트에게 플레이어 수 변경 알림
+	h.notifyPlayerCountChanged(room)
 
 	// 게임 시작 조건 확인
 	h.checkAndStartGame(room)
@@ -534,6 +574,34 @@ func (h *Handler) handleLeaveRoom(client *Client) {
 	} else {
 		room.mu.RUnlock()
 	}
+
+	// 방의 모든 클라이언트에게 플레이어 수 변경 알림
+	h.notifyPlayerCountChanged(room)
+}
+
+// 방의 모든 클라이언트에게 플레이어 수 변경 알림
+func (h *Handler) notifyPlayerCountChanged(room *Room) {
+	room.mu.RLock()
+	playerCount := len(room.players)
+	room.mu.RUnlock()
+
+	// 플레이어 수 변경 데이터 생성
+	responseData := &ResponsePlayerCountChangedData{
+		PlayerCount: playerCount,
+	}
+
+	response := NewSuccessResponse(ResponsePlayerCountChanged, responseData)
+
+	// 방에 속한 모든 클라이언트에게 전송
+	h.mu.RLock()
+	for client := range h.clients {
+		if client.IsInRoom && client.RoomID == room.ID {
+			h.sendToClient(client, response)
+		}
+	}
+	h.mu.RUnlock()
+
+	log.Printf("방 %d의 플레이어 수 변경 알림 전송: %d명", room.ID, playerCount)
 }
 
 // 준비 완료 처리
@@ -1440,6 +1508,244 @@ func (h *Handler) handleCreateAccount(client *Client, request *RequestPacket) {
 	h.sendToClient(client, response)
 
 	log.Printf("계정 생성 성공: ID=%s", createAccountData.ID)
+}
+
+// 방 목록 조회 처리
+func (h *Handler) handleGetRoomList(client *Client) {
+	h.roomMu.RLock()
+	defer h.roomMu.RUnlock()
+
+	var roomList []RoomInfo
+
+	// 모든 방을 순회하면서 게임 중이 아닌 방만 필터링
+	for roomID, room := range h.rooms {
+		room.mu.RLock()
+		isGameStarted := room.isGameStarted
+		playerCount := len(room.players)
+		room.mu.RUnlock()
+
+		// 게임 중이 아닌 방만 목록에 추가
+		if !isGameStarted {
+			roomInfo := RoomInfo{
+				RoomID:         roomID,
+				RoomName:       room.Name,
+				PlayerCount:    playerCount,
+				MaxPlayerCount: room.maxPlayers,
+				FruitVariation: room.fruitVariation,
+				FruitCount:     room.fruitBellCount,
+				Speed:          room.gameTempo,
+			}
+			roomList = append(roomList, roomInfo)
+		}
+	}
+
+	// 방 목록 응답 전송 (빈 배열 보장)
+	if roomList == nil {
+		roomList = []RoomInfo{}
+	}
+	response := NewSuccessResponse(ResponseGetRoomList, map[string]interface{}{
+		"rooms": roomList,
+	})
+	h.sendToClient(client, response)
+
+	log.Printf("방 목록 조회: %d개의 방 정보 전송", len(roomList))
+}
+
+// 방 생성 처리
+func (h *Handler) handleCreateRoom(client *Client, request *RequestPacket) {
+	// 이미 방에 참여한 상태인지 확인
+	if client.IsInRoom {
+		h.sendErrorWithSignal(client, RequestCreateRoom, "이미 방에 참여한 상태입니다")
+		return
+	}
+
+	// 요청 데이터 파싱
+	var createRoomData RequestCreateRoomData
+
+	// request.Data가 map[string]interface{}인 경우를 처리
+	if dataMap, ok := request.Data.(map[string]interface{}); ok {
+		// RoomName 확인
+		if roomName, exists := dataMap["roomName"]; exists {
+			if roomNameStr, ok := roomName.(string); ok {
+				createRoomData.RoomName = roomNameStr
+			} else {
+				log.Printf("방 이름이 문자열이 아님: %v", roomName)
+				h.sendErrorWithSignal(client, RequestCreateRoom, "잘못된 방 이름 형식입니다")
+				return
+			}
+		} else {
+			log.Printf("방 생성 데이터에 roomName이 없음")
+			h.sendErrorWithSignal(client, RequestCreateRoom, "방 이름이 없습니다")
+			return
+		}
+
+		// MaxPlayerCount 확인
+		if maxPlayerCount, exists := dataMap["maxPlayerCount"]; exists {
+			if maxPlayerCountFloat, ok := maxPlayerCount.(float64); ok {
+				createRoomData.MaxPlayerCount = int(maxPlayerCountFloat)
+			} else {
+				log.Printf("최대 플레이어 수가 숫자가 아님: %v", maxPlayerCount)
+				h.sendErrorWithSignal(client, RequestCreateRoom, "잘못된 최대 플레이어 수 형식입니다")
+				return
+			}
+		} else {
+			log.Printf("방 생성 데이터에 maxPlayerCount가 없음")
+			h.sendErrorWithSignal(client, RequestCreateRoom, "최대 플레이어 수가 없습니다")
+			return
+		}
+
+		// FruitVariation 확인
+		if fruitVariation, exists := dataMap["fruitVariation"]; exists {
+			if fruitVariationFloat, ok := fruitVariation.(float64); ok {
+				createRoomData.FruitVariation = int(fruitVariationFloat)
+			} else {
+				log.Printf("과일 종류 수가 숫자가 아님: %v", fruitVariation)
+				h.sendErrorWithSignal(client, RequestCreateRoom, "잘못된 과일 종류 수 형식입니다")
+				return
+			}
+		} else {
+			log.Printf("방 생성 데이터에 fruitVariation이 없음")
+			h.sendErrorWithSignal(client, RequestCreateRoom, "과일 종류 수가 없습니다")
+			return
+		}
+
+		// FruitCount 확인
+		if fruitCount, exists := dataMap["fruitCount"]; exists {
+			if fruitCountFloat, ok := fruitCount.(float64); ok {
+				createRoomData.FruitCount = int(fruitCountFloat)
+			} else {
+				log.Printf("과일 개수가 숫자가 아님: %v", fruitCount)
+				h.sendErrorWithSignal(client, RequestCreateRoom, "잘못된 과일 개수 형식입니다")
+				return
+			}
+		} else {
+			log.Printf("방 생성 데이터에 fruitCount가 없음")
+			h.sendErrorWithSignal(client, RequestCreateRoom, "과일 개수가 없습니다")
+			return
+		}
+
+		// Speed 확인
+		if speed, exists := dataMap["speed"]; exists {
+			if speedFloat, ok := speed.(float64); ok {
+				createRoomData.Speed = int(speedFloat)
+			} else {
+				log.Printf("게임 템포가 숫자가 아님: %v", speed)
+				h.sendErrorWithSignal(client, RequestCreateRoom, "잘못된 게임 템포 형식입니다")
+				return
+			}
+		} else {
+			log.Printf("방 생성 데이터에 speed가 없음")
+			h.sendErrorWithSignal(client, RequestCreateRoom, "게임 템포가 없습니다")
+			return
+		}
+	} else {
+		log.Printf("방 생성 데이터 형식 오류: %v", request.Data)
+		h.sendErrorWithSignal(client, RequestCreateRoom, "잘못된 방 생성 데이터 형식입니다")
+		return
+	}
+
+	// 데이터 유효성 검사
+	if createRoomData.RoomName == "" {
+		h.sendErrorWithSignal(client, RequestCreateRoom, "방 이름은 비어있을 수 없습니다")
+		return
+	}
+	if createRoomData.MaxPlayerCount < 2 || createRoomData.MaxPlayerCount > 8 {
+		h.sendErrorWithSignal(client, RequestCreateRoom, "최대 플레이어 수는 2-8명이어야 합니다")
+		return
+	}
+	if createRoomData.FruitVariation < 2 || createRoomData.FruitVariation > 6 {
+		h.sendErrorWithSignal(client, RequestCreateRoom, "과일 종류 수는 2-6개여야 합니다")
+		return
+	}
+	if createRoomData.FruitCount < 3 || createRoomData.FruitCount > 8 {
+		h.sendErrorWithSignal(client, RequestCreateRoom, "과일 개수는 3-8개여야 합니다")
+		return
+	}
+	if createRoomData.Speed < 0 || createRoomData.Speed > 3 {
+		h.sendErrorWithSignal(client, RequestCreateRoom, "게임 템포는 0-3이어야 합니다")
+		return
+	}
+
+	log.Printf("방 생성 요청: %s (최대인원:%d, 과일종류:%d, 벨개수:%d, 템포:%d)",
+		createRoomData.RoomName, createRoomData.MaxPlayerCount, createRoomData.FruitVariation,
+		createRoomData.FruitCount, createRoomData.Speed)
+
+	// 새로운 방 ID 생성
+	h.roomMu.Lock()
+	newRoomID := 1
+	for id := range h.rooms {
+		if id >= newRoomID {
+			newRoomID = id + 1
+		}
+	}
+	h.roomMu.Unlock()
+
+	// 새 방 생성
+	newRoom := &Room{
+		ID:               newRoomID,
+		Name:             createRoomData.RoomName,
+		players:          make(map[string]*Player),
+		maxPlayers:       createRoomData.MaxPlayerCount,
+		fruitVariation:   createRoomData.FruitVariation,
+		fruitBellCount:   createRoomData.FruitCount,
+		gameTempo:        createRoomData.Speed,
+		lastEmotionTimes: make(map[string]time.Time),
+	}
+
+	// 방을 핸들러에 등록
+	h.roomMu.Lock()
+	h.rooms[newRoomID] = newRoom
+	h.roomMu.Unlock()
+
+	// 플레이어를 방에 추가
+	username := "Player" + generateRandomNumber(4) // 기본값: 랜덤 숫자 4개를 사용자명으로
+
+	// 로그인된 사용자인 경우 닉네임 사용
+	if client.IsUserLoggedIn() {
+		username = client.UserNickname
+	}
+
+	player := &Player{
+		ID:       client.ID,
+		Username: username,
+	}
+
+	newRoom.mu.Lock()
+	newRoom.players[client.ID] = player
+	newRoom.mu.Unlock()
+
+	// 클라이언트 상태 업데이트
+	client.mu.Lock()
+	client.IsInRoom = true
+	client.RoomID = newRoomID
+	client.Username = player.Username
+	client.mu.Unlock()
+
+	// 방 생성 성공 응답
+	responseData := &ResponseCreateRoomData{
+		RoomID: newRoomID,
+	}
+
+	response := NewSuccessResponse(ResponseCreateRoom, responseData)
+	h.sendToClient(client, response)
+
+	log.Printf("방 생성 성공: %s (ID:%d) - 플레이어: %s", createRoomData.RoomName, newRoomID, player.Username)
+
+	// 방 입장 성공 응답 (즉시 전송)
+	enterResponse := NewSuccessResponse(ResponseEnterRoom, map[string]interface{}{
+		"roomId":         newRoomID,
+		"roomName":       newRoom.Name,
+		"maxPlayers":     newRoom.maxPlayers,
+		"fruitVariation": newRoom.fruitVariation,
+		"fruitBellCount": newRoom.fruitBellCount,
+		"gameTempo":      newRoom.gameTempo,
+	})
+	h.sendToClient(client, enterResponse)
+
+	log.Printf("플레이어 방 입장: %s (%s) -> %s", client.ID, player.Username, newRoomID)
+
+	// 방의 모든 클라이언트에게 플레이어 수 변경 알림
+	h.notifyPlayerCountChanged(newRoom)
 }
 
 // DB에 계정 정보 저장
