@@ -5,9 +5,6 @@ import (
 	"os"
 	"strconv"
 
-	// "main/auth"
-	// "main/db"
-
 	"main/db"
 	"main/socket"
 
@@ -41,10 +38,6 @@ func main() {
 	}
 
 	r := gin.Default()
-
-	// ✅ Google OAuth 라우터 (비활성화)
-	// r.GET("/google/auth/login", auth.GoogleLoginHandler)
-	// r.GET("/google/oauth2", auth.GoogleCallbackHandler)
 
 	// ✅ WebSocket 핸들러
 	handler := socket.NewHandler()
