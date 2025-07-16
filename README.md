@@ -200,7 +200,11 @@ USE_DATABASE=false go run main.go
     "playerCount": 4,
     "playerNames": ["Player1234", "Player5678", "Player9012", "Player3456"],
     "myIndex": 0,
-    "startingCards": 5
+    "startingCards": 5,
+    "gameTimeLimit": 120,
+    "fruitVariation": 3,
+    "fruitBellCount": 5,
+    "gameTempo": 0
   },
   "code": 200
 }
@@ -212,6 +216,14 @@ USE_DATABASE=false go run main.go
 - **playerNames**: 모든 플레이어의 이름 배열
 - **myIndex**: 받는 클라이언트의 플레이어 인덱스 (0부터 시작)
 - **startingCards**: 게임 시작 시 각 플레이어가 받는 카드 수
+- **gameTimeLimit**: 게임 제한시간 (초)
+- **fruitVariation**: 과일 종류 수 (정수)
+- **fruitBellCount**: 종을 올바르게 치기 위한 과일 수 (정수)
+- **gameTempo**: 게임 템포 (정수)
+  - 0: 3초 간격
+  - 1: 2초 간격
+  - 2: 1.5초 간격
+  - 3: 1초 간격
 
 ### 게임 준비 완료 패킷 (ResponseReadyGame)
 

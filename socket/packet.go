@@ -21,6 +21,7 @@ const (
 	ResponseRingBellCorrect = 2002
 	ResponseRingBellWrong   = 2003
 	ResponseEmotion         = 2004
+	ResponseHowSlow         = 2005
 
 	ResponseEndGame = 3000
 
@@ -140,11 +141,14 @@ func (e *InvalidPacketError) Error() string {
 
 // 게임 시작 데이터 구조체
 type GameStartData struct {
-	PlayerCount   int      `json:"playerCount"`
-	PlayerNames   []string `json:"playerNames"`
-	MyIndex       int      `json:"myIndex"`
-	StartingCards int      `json:"startingCards"`
-	GameTimeLimit int      `json:"gameTimeLimit"` // 게임 제한시간 (초)
+	PlayerCount    int      `json:"playerCount"`
+	PlayerNames    []string `json:"playerNames"`
+	MyIndex        int      `json:"myIndex"`
+	StartingCards  int      `json:"startingCards"`
+	GameTimeLimit  int      `json:"gameTimeLimit"`  // 게임 제한시간 (초)
+	FruitVariation int      `json:"fruitVariation"` // 과일 종류 수
+	FruitBellCount int      `json:"fruitBellCount"` // 종을 올바르게 치기 위한 과일 수
+	GameTempo      int      `json:"gameTempo"`      // 게임 템포
 }
 
 // 카드 공개 데이터 구조체
@@ -182,6 +186,11 @@ type RequestEmotionData struct {
 type ResponseEmotionData struct {
 	PlayerIndex int `json:"playerIndex"` // 감정표현을 한 플레이어 인덱스
 	EmotionType int `json:"emotionType"` // 감정표현 타입
+}
+
+// 늦게 종을 친 클라이언트에게 전송하는 데이터 구조체
+type ResponseHowSlowData struct {
+	DelayMs int `json:"delayMs"` // 가장 먼저 종을 친 클라이언트와의 시간 차이 (밀리초)
 }
 
 // 계정 생성 요청 데이터 구조체
