@@ -59,8 +59,10 @@ type Room struct {
 	publicFruitCounts  []int // 각 플레이어의 공개된 카드 과일 개수
 	openCards          []int // 각 플레이어가 공개한 카드 개수
 	// 벨 누르기 관련 상태
-	bellRung          bool      // 벨이 눌렸는지 여부 (새로운 카드 공개 전까지 유지)
-	firstBellRungTime time.Time // 벨을 처음 누른 시간
+	bellRung          bool            // 벨이 눌렸는지 여부 (새로운 카드 공개 전까지 유지)
+	firstBellRungTime time.Time       // 벨을 처음 누른 시간
+	howSlowSentTo     map[string]bool // ResponseHowSlow 패킷을 보낸 플레이어들 추적
+	lastCardOpenTime  time.Time       // 마지막 카드 공개 시간
 	// 게임 제한시간 관련 상태
 	gameTimer     *time.Timer // 게임 제한시간 타이머
 	isTimeExpired bool        // 시간제한이 끝났는지 여부
@@ -1200,7 +1202,9 @@ func (h *Handler) openCard(room *Room) {
 
 	// 벨 누르기 상태 리셋 (새로운 카드가 공개됨)
 	room.bellRung = false
-	room.firstBellRungTime = time.Time{} // 벨 시간 초기화
+	room.firstBellRungTime = time.Time{}       // 벨 시간 초기화
+	room.howSlowSentTo = make(map[string]bool) // ResponseHowSlow 패킷 전송 추적 초기화
+	room.lastCardOpenTime = time.Now()         // 카드 공개 시간 기록
 
 	// 카드 공개 데이터 생성
 	openCardData := &OpenCardData{
@@ -1251,24 +1255,52 @@ func (h *Handler) handleRingBell(client *Client) {
 		return
 	}
 
+	// 카드 공개 후 보정 시간 이내의 벨 누르기 무시 (클라이언트-서버 지연시간 및 애니메이션 보정)
+	room.mu.RLock()
+	timeSinceCardOpen := time.Since(room.lastCardOpenTime)
+	room.mu.RUnlock()
+
+	if timeSinceCardOpen < time.Duration(config.BellPressCooldownMs)*time.Millisecond {
+		log.Printf("플레이어 벨 누름 무시: %s (%s) - 카드 공개 후 %dms 이내 (%.2fms)", client.ID, client.Username, config.BellPressCooldownMs, float64(timeSinceCardOpen.Microseconds())/1000.0)
+		return
+	}
+
 	// 이미 벨이 눌렸는지 확인
 	room.mu.Lock()
 	if room.bellRung {
 		// 벨이 이미 눌린 상태라면 늦게 온 클라이언트에게 ResponseHowSlow 패킷 전송
 		firstBellTime := room.firstBellRungTime
+
+		// 이미 ResponseHowSlow 패킷을 보낸 플레이어인지 확인
+		alreadySent := room.howSlowSentTo[client.ID]
 		room.mu.Unlock()
+
+		// 이미 보낸 플레이어라면 무시
+		if alreadySent {
+			log.Printf("플레이어 벨 누름 무시: %s (%s) - 이미 ResponseHowSlow 패킷을 보낸 플레이어", client.ID, client.Username)
+			return
+		}
 
 		// 현재 시간과 첫 번째 벨 누른 시간의 차이 계산 (밀리초)
 		delayMs := int(time.Since(firstBellTime).Milliseconds())
 
 		log.Printf("플레이어 벨 누름 무시: %s (%s) - 이미 벨이 눌린 상태, 지연시간: %dms", client.ID, client.Username, delayMs)
 
-		// ResponseHowSlow 패킷 전송
-		howSlowData := &ResponseHowSlowData{
-			DelayMs: delayMs,
+		// 1초(1000ms) 이내에 온 경우에만 ResponseHowSlow 패킷 전송
+		if delayMs <= 1000 {
+			// ResponseHowSlow 패킷 전송 표시
+			room.mu.Lock()
+			room.howSlowSentTo[client.ID] = true
+			room.mu.Unlock()
+
+			howSlowData := &ResponseHowSlowData{
+				DelayMs: delayMs,
+			}
+			response := NewSuccessResponse(ResponseHowSlow, howSlowData)
+			h.sendToClient(client, response)
+		} else {
+			log.Printf("플레이어 벨 누름 무시 (1초 초과): %s (%s) - 지연시간: %dms", client.ID, client.Username, delayMs)
 		}
-		response := NewSuccessResponse(ResponseHowSlow, howSlowData)
-		h.sendToClient(client, response)
 		return
 	}
 
@@ -1325,7 +1357,12 @@ func (h *Handler) handleRingBell(client *Client) {
 		}
 		h.mu.RUnlock()
 
-		log.Printf("벨 누르기 성공! 플레이어 인덱스: %d", playerIndex)
+		// 벨을 올바르게 누른 플레이어의 howSlowSentTo를 true로 설정하여 ResponseHowSlow 패킷이 전송되지 않도록 함
+		room.mu.Lock()
+		room.howSlowSentTo[client.ID] = true
+		room.mu.Unlock()
+
+		log.Printf("벨 누르기 성공! 플레이어 인덱스: %d - ResponseHowSlow 패킷 비활성화", playerIndex)
 
 		// 시간제한이 끝난 후 올바르게 종을 친 경우 게임 종료
 		if isTimeExpired {
@@ -1360,7 +1397,14 @@ func (h *Handler) handleRingBell(client *Client) {
 		}
 		h.mu.RUnlock()
 
-		log.Printf("벨 누르기 실패! 플레이어 인덱스: %d", playerIndex)
+		// 벨을 잘못 누른 경우, howSlowSentTo를 모두 true로 설정하여 ResponseHowSlow 패킷이 전송되지 않도록 함
+		room.mu.Lock()
+		for clientID := range room.players {
+			room.howSlowSentTo[clientID] = true
+		}
+		room.mu.Unlock()
+
+		log.Printf("벨 누르기 실패! 플레이어 인덱스: %d - ResponseHowSlow 패킷 비활성화", playerIndex)
 	}
 }
 
@@ -1741,6 +1785,8 @@ func (h *Handler) handleCreateRoom(client *Client, request *RequestPacket) {
 		fruitBellCount:   createRoomData.FruitCount,
 		gameTempo:        createRoomData.Speed,
 		lastEmotionTimes: make(map[string]time.Time),
+		howSlowSentTo:    make(map[string]bool),
+		lastCardOpenTime: time.Now(),
 	}
 
 	// 방을 핸들러에 등록
