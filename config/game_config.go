@@ -6,8 +6,8 @@ const (
 	MaxPlayers = 4 // 방에 들어갈 수 있는 최대 플레이어 수
 
 	// 벨 누르기 설정s
-	BellRingingFruitCount = 5   // 종을 올바르게 치기 위한 과일 개수
-	BellPressCooldownMs   = 150 // 카드 공개 후 벨 누르기 보정 시간 (밀리초)
+	BellRingingFruitCount = 5 // 종을 올바르게 치기 위한 과일 개수
+	BellPressCooldownMs   = 0 // 카드 공개 후 벨 누르기 보정 시간 (밀리초)
 
 	// 카드 공개 설정
 	CardOpenInterval = 2 // 카드 공개 간격 (초)
